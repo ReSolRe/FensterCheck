@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FensterCheck">
+<meta name="theme-color" content="#4da3ff">
+<title>FensterCheck</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect width='180' height='180' rx='30' fill='%230b0f14'/><text x='90' y='115' font-size='96' text-anchor='middle'>🔍</text></svg>">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body,#root{height:100%;width:100%;overflow-x:hidden}
+body{background:#0b0f14;color:#e4eaf2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:15px;-webkit-font-smoothing:antialiased}
+input,select,textarea,button{font-family:inherit}
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+::-webkit-scrollbar{width:0}
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-type="module">
+const {useState,useEffect,useRef,useCallback}=React;
+
+// Constants
+const DB_NAME="fenstercheck_db",STORE="projects";
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+const FLOORS=["UG3","UG2","UG1","EG","OG1","OG2","OG3","OG4","OG5","OG6","OG7","OG8","OG9","OG10","DG"];
+const ORIENTATIONS=["N","NO","O","SO","S","SW","W","NW"];
+const FEN_TYPEN=["Dreh","Kipp","Dreh-Kipp","Fest","Schiebe","Klapp","Sonstig"];
+const FRAME_MAT=["Holz","Holz-Metall","Kunststoff","Kunststoff-Metall","Metall","Unbekannt"];
+const GLAZ_TYPES=["2-fach IV","2-fach WSV","3-fach WSV","Unbekannt"];
+const LOWE_OPT=["Ja","Nein","Unbekannt"];
+const GAS_TYPES=["Luft","Argon","Krypton","Unbekannt"];
+const RV_TYPES=["Aluminium","Edelstahl (Warm Edge)","Kunststoff (TGI/TPS)","Unbekannt"];
+const RV_ZUST=["Intakt","Undicht","Beschlagen","Defekt"];
+const DI_ANZ=["0","1","2","3"];
+const DI_MAT=["EPDM","Silikon","TPE","PVC","Unbekannt"];
+const DI_ZUST=["Intakt","Spröde","Verformt","Fehlend"];
+const BE_TYP=["Einhand-Drehkipp","Olive+Stange","Getriebe","Sonstig"];
+const BE_ZUST=["Funktionsfähig","Schwergängig","Ausgeschlagen","Defekt"];
+const ZU_SIMPLE=["Gut","Mittel","Schlecht"];
+const ZU_DET=["Rahmen: Gut","Rahmen: Beschädigt","Rahmen: Verwittert","Dichtung: Intakt","Dichtung: Spröde","Dichtung: Fehlend","Glas: Intakt","Glas: Beschlagen","Glas: Gesprungen","Beschlag: Funktionsfähig","Beschlag: Schwergängig","Beschlag: Defekt"];
+const DSRC=["M","H","P"];
+const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
+
+const FIELDS={
+  fassade:{label:"Fassadenorientierung",g:"f",t:"select",o:ORIENTATIONS},
+  fensterTyp:{label:"Fenstertyp",g:"f",t:"select",o:FEN_TYPEN},
+  rahmenMaterial:{label:"Rahmenmaterial",g:"f",t:"select",o:FRAME_MAT},
+  rahmenProfiltiefe:{label:"Rahmenprofiltiefe [mm]",g:"f",t:"number",src:true},
+  baujahr:{label:"Baujahr",g:"f",t:"number",src:true},
+  fensterBreite:{label:"Breite Fenster [mm]",g:"f",t:"number",src:true},
+  fensterHoehe:{label:"Höhe Fenster [mm]",g:"f",t:"number",src:true},
+  ufWert:{label:"Uf-Wert [W/m²K]",g:"f",t:"number",step:"0.01",src:true},
+  uwWert:{label:"Uw-Wert [W/m²K]",g:"f",t:"number",step:"0.01",src:true},
+  dichtungAnzahl:{label:"Dichtungsebenen",g:"f",t:"select",o:DI_ANZ},
+  dichtungMaterial:{label:"Dichtungsmaterial",g:"f",t:"select",o:DI_MAT},
+  dichtungZustand:{label:"Zustand Dichtungen",g:"f",t:"select",o:DI_ZUST},
+  beschlagTyp:{label:"Beschlagtyp",g:"f",t:"select",o:BE_TYP},
+  beschlagZustand:{label:"Zustand Beschläge",g:"f",t:"select",o:BE_ZUST},
+  zustandRahmen:{label:"Zustand Rahmen",g:"f",t:"zustand"},
+  verglasungsTyp:{label:"Verglasungsaufbau",g:"v",t:"select",o:GLAZ_TYPES},
+  scheibenaufbau:{label:"Scheibenaufbau [mm]",g:"v",t:"text",ph:"z.B. 4/16/4",src:true},
+  lowE:{label:"Low-E Beschichtung",g:"v",t:"select",o:LOWE_OPT},
+  gasart:{label:"Gasart",g:"v",t:"select",o:GAS_TYPES},
+  randverbundTyp:{label:"Randverbund-Typ",g:"v",t:"select",o:RV_TYPES},
+  randverbundZustand:{label:"Zustand Randverbund",g:"v",t:"select",o:RV_ZUST},
+  ugWert:{label:"Ug-Wert [W/m²K]",g:"v",t:"number",step:"0.01",src:true},
+  gWert:{label:"g-Wert",g:"v",t:"number",step:"0.01",src:true},
+  glasBreite:{label:"Glasbreite [mm]",g:"v",t:"number",src:true},
+  glasHoehe:{label:"Glashöhe [mm]",g:"v",t:"number",src:true},
+  stempel:{label:"Stempel/Kennzeichnung",g:"v",t:"text",ph:"Herstellerangaben"},
+};
+
+const PRESETS={
+  schnell:{name:"Schnell",desc:"Gasfüllgrad + Typ",fields:["verglasungsTyp"]},
+  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterTyp","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau"]},
+  voll:{name:"Voll",desc:"Alle Felder",fields:Object.keys(FIELDS)},
+};
+
+// IndexedDB
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,3);r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE,{keyPath:"id"});};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);})}
+async function dbAll(){const db=await openDB();return new Promise((r,j)=>{const t=db.transaction(STORE,"readonly");const s=t.objectStore(STORE).getAll();s.onsuccess=()=>r(s.result);s.onerror=()=>j(s.error);})}
+async function dbPut(d){const db=await openDB();return new Promise((r,j)=>{const t=db.transaction(STORE,"readwrite");const s=t.objectStore(STORE).put(d);s.onsuccess=()=>r(s.result);s.onerror=()=>j(s.error);})}
+async function dbDel(k){const db=await openDB();return new Promise((r,j)=>{const t=db.transaction(STORE,"readwrite");const s=t.objectStore(STORE).delete(k);s.onsuccess=()=>r();s.onerror=()=>j(s.error);})}
+
+// CSV Parse
+function parseCSV(text){const ls=text.trim().split(/\r?\n/);if(ls.length<2)return[];const h=ls[0].split(/[;,\t]/).map(x=>x.trim().toLowerCase());return ls.slice(1).map(l=>{const v=l.split(/[;,\t]/).map(x=>x.trim());const o={};h.forEach((x,i)=>{o[x]=v[i]||"";});return o;}).filter(r=>Object.values(r).some(v=>v));}
+
+// Export
+function buildExport(p){
+  const af=new Set(p.activeFields||[]);
+  const ff=Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&af.has(k));
+  const vf=Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&af.has(k));
+  const ov=[];
+  ov.push(["FensterCheck – Projektexport"],[],["Projektname",p.name||""],["Gebäude",p.gebaeude||""],["Adresse",p.adresse||""],
+    ["Erstellt",p.erstellt?new Date(p.erstellt).toLocaleDateString("de-CH"):""],
+    ["Geändert",p.geaendert?new Date(p.geaendert).toLocaleString("de-CH"):""],
+    ["Modus",p.modus==="fenster"?"Fenster+Verglasungen":"Nur Verglasungen"],
+    ["Zustandserfassung",p.zustandModus||"Keine"],[]);
+  let tR=0,tF=0,tV=0,tM=0,tP=0;
+  (p.rooms||[]).forEach(r=>{tR++;tP+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{tF++;tP+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{tV++;tM+=(v.messungen||[]).length;tP+=(v.photos||[]).length;});});});
+  ov.push(["Statistik"],["Räume",tR],["Fenster",tF],["Verglasungen",tV],["Messungen",tM],["Fotos",tP],[],
+    ["Datenquellen"],["M","Messwert (vor Ort)"],["H","Herstellerangabe"],["P","Planungsdaten"]);
+
+  // Messungen
+  const mh=["Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Gasfüllgrad [%]","Messung-Nr","Zeitstempel","Datum","Uhrzeit"];
+  vf.forEach(([k,d])=>{mh.push(d.label);if(d.src)mh.push(d.label+" [Quelle]");});
+  ff.forEach(([k,d])=>{mh.push(d.label);if(d.src)mh.push(d.label+" [Quelle]");});
+  if(p.zustandModus&&p.zustandModus!=="Keine")mh.push("Zustand Rahmen");
+  mh.push("Notizen");
+  const mr=[mh];
+  (p.rooms||[]).forEach(room=>{(room.fenster||[]).forEach(fen=>{(fen.verglasungen||[]).forEach(vg=>{
+    const ms=vg.messungen||[];
+    const emit=(m,mi)=>{const z=m?new Date(m.zeit):null;
+      const row=[room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||"",
+        m?m.wert:"",m?mi+1:"",m?m.zeit:"",z?z.toLocaleDateString("de-CH"):"",z?z.toLocaleTimeString("de-CH"):""];
+      vf.forEach(([k,d])=>{row.push(vg.data?.[k]||"");if(d.src)row.push(vg.sources?.[k]||"");});
+      ff.forEach(([k,d])=>{row.push(fen.data?.[k]||"");if(d.src)row.push(fen.sources?.[k]||"");});
+      if(p.zustandModus&&p.zustandModus!=="Keine")row.push(fen.zustandRahmen||"");
+      row.push(vg.notizen||"");mr.push(row);};
+    if(ms.length===0)emit(null,0);else ms.forEach((m,mi)=>emit(m,mi));
+  });});});
+
+  // Zusammenfassung
+  const zh=["Geschoss","Raum-ID","Raumnummer","Fenster","Verglasungen","Messungen","Ø [%]","Min [%]","Max [%]","Median [%]","Vollst. [%]","Fotos"];
+  const zr=[zh];
+  (p.rooms||[]).forEach(room=>{let fc=0,vc=0,mc=0,w=[],pc=(room.photos||[]).length;
+    (room.fenster||[]).forEach(f=>{fc++;pc+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{vc++;pc+=(v.photos||[]).length;(v.messungen||[]).forEach(m=>{mc++;w.push(m.wert);});});});
+    const s=[...w].sort((a,b)=>a-b);const avg=w.length?Math.round(w.reduce((a,b)=>a+b,0)/w.length*10)/10:"";
+    const med=s.length?(s.length%2===0?Math.round((s[s.length/2-1]+s[s.length/2])/2*10)/10:s[Math.floor(s.length/2)]):"";
+    zr.push([room.geschoss||"",room.raumId||"",room.raumnummer||"",fc,vc,mc,avg,s[0]??"",s[s.length-1]??"",med,vc>0?Math.round(Math.min(mc,vc)/vc*100):0,pc]);
+  });
+
+  // Fotoverzeichnis
+  const fh=["Nr","Ebene","Geschoss","Raumnummer","Fenster","Verglasung","Typ","Zeitstempel","Dateiname"];
+  const fr=[fh];let fn=1;
+  (p.rooms||[]).forEach(room=>{
+    (room.photos||[]).forEach(ph=>{fr.push([fn++,"Raum",room.geschoss,room.raumnummer,"","","Raum",ph.zeit||"",`${room.geschoss}_${room.raumnummer}_Raum_${fn}.jpg`]);});
+    (room.fenster||[]).forEach(fen=>{
+      (fen.photos||[]).forEach(ph=>{fr.push([fn++,"Fenster",room.geschoss,room.raumnummer,fen.nr,"","Fenster",ph.zeit||"",`${room.geschoss}_${room.raumnummer}_${fen.nr}_${fn}.jpg`]);});
+      (fen.verglasungen||[]).forEach(vg=>{(vg.photos||[]).forEach(ph=>{
+        const t=ph.isStempel?"Stempel":"Verglasung";
+        fr.push([fn++,"Verglasung",room.geschoss,room.raumnummer,fen.nr,vg.nr,t,ph.zeit||"",`${room.geschoss}_${room.raumnummer}_${fen.nr}_V${vg.nr}_${t}_${fn}.jpg`]);
+      });});
+    });
+  });
+  return{ov,mr,zr,fr};
+}
+
+function doExcelExport(p){
+  const d=buildExport(p);const wb=XLSX.utils.book_new();
+  const w1=XLSX.utils.aoa_to_sheet(d.ov);w1["!cols"]=[{wch:28},{wch:50}];XLSX.utils.book_append_sheet(wb,w1,"Übersicht");
+  const w2=XLSX.utils.aoa_to_sheet(d.mr);w2["!cols"]=d.mr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,22))}));
+  w2["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:d.mr[0].length-1}})};XLSX.utils.book_append_sheet(wb,w2,"Messungen");
+  const w3=XLSX.utils.aoa_to_sheet(d.zr);w3["!cols"]=d.zr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,20))}));
+  w3["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:d.zr[0].length-1}})};XLSX.utils.book_append_sheet(wb,w3,"Zusammenfassung");
+  if(d.fr.length>1){const w4=XLSX.utils.aoa_to_sheet(d.fr);w4["!cols"]=d.fr[0].map(h=>({wch:Math.max(8,Math.min(String(h).length+4,28))}));XLSX.utils.book_append_sheet(wb,w4,"Fotoverzeichnis");}
+  XLSX.writeFile(wb,`FensterCheck_${p.name||"Export"}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+function doCSVExport(p){
+  const d=buildExport(p);
+  const csv=d.mr.map(r=>r.map(c=>{const s=String(c??"");return s.includes(";")||s.includes('"')?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\n");
+  const b=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});const u=URL.createObjectURL(b);
+  const a=document.createElement("a");a.href=u;a.download=`FensterCheck_${p.name||"Export"}_${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(u);
+}
+
+function doJSONExport(p){
+  const b=new Blob([JSON.stringify(p,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);
+  const a=document.createElement("a");a.href=u;a.download=`FensterCheck_${p.name||"Backup"}_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(u);
+}
+
+async function doPhotoExport(p){
+  let n=0;const dl=async(data,name)=>{const a=document.createElement("a");a.href=data;a.download=name;a.click();n++;await new Promise(r=>setTimeout(r,250));};
+  for(const rm of(p.rooms||[])){
+    for(const ph of(rm.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_Raum_${ph.id.slice(-4)}.jpg`);
+    for(const f of(rm.fenster||[])){
+      for(const ph of(f.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_${f.nr}_${ph.id.slice(-4)}.jpg`);
+      for(const v of(f.verglasungen||[]))for(const ph of(v.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_${f.nr}_V${v.nr}_${ph.isStempel?"Stempel":"Vgl"}_${ph.id.slice(-4)}.jpg`);
+    }
+  }
+  return n;
+}
+
+// Theme
+const C={bg:"#0b0f14",sf:"#141b24",sf2:"#1c2636",bd:"#2a3648",ac:"#4da3ff",acBg:"rgba(77,163,255,0.12)",
+  ok:"#34d399",okBg:"rgba(52,211,153,0.12)",warn:"#fbbf24",warnBg:"rgba(251,191,36,0.12)",
+  err:"#f87171",tx:"#e4eaf2",tx2:"#8a9bb5",tx3:"#536580",sM:"#4da3ff",sH:"#a78bfa",sP:"#fbbf24"};
+
+// Styles
+const $={
+  app:{minHeight:"100vh",background:C.bg,color:C.tx,maxWidth:480,margin:"0 auto",position:"relative"},
+  hdr:{background:C.sf,borderBottom:`1px solid ${C.bd}`,padding:"10px 12px",display:"flex",alignItems:"center",gap:8,position:"sticky",top:0,zIndex:100},
+  hdrT:{fontSize:16,fontWeight:700,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"},
+  hdrB:{background:"none",border:"none",color:C.ac,fontSize:14,fontWeight:600,cursor:"pointer",padding:"6px 8px",whiteSpace:"nowrap"},
+  body:{padding:"10px 14px 100px"},
+  card:{background:C.sf,border:`1px solid ${C.bd}`,borderRadius:12,padding:14,marginBottom:10},
+  cardT:{fontSize:11,fontWeight:700,color:C.tx2,textTransform:"uppercase",letterSpacing:"1px",marginBottom:8},
+  inp:{width:"100%",padding:"10px 12px",background:C.sf2,border:`1px solid ${C.bd}`,borderRadius:8,color:C.tx,fontSize:15,outline:"none",boxSizing:"border-box"},
+  inpS:{padding:"7px 10px",fontSize:13},
+  sel:{width:"100%",padding:"10px 12px",background:C.sf2,border:`1px solid ${C.bd}`,borderRadius:8,color:C.tx,fontSize:14,outline:"none",boxSizing:"border-box"},
+  selS:{padding:"7px 10px",fontSize:13},
+  lbl:{display:"block",fontSize:11,fontWeight:600,color:C.tx2,marginBottom:3,letterSpacing:"0.3px"},
+  btn:{padding:"11px 18px",borderRadius:8,border:"none",fontWeight:600,fontSize:14,cursor:"pointer",display:"inline-flex",alignItems:"center",justifyContent:"center",gap:5},
+  bP:{background:C.ac,color:"#fff"},bD:{background:C.err,color:"#fff"},bO:{background:"transparent",border:`1px solid ${C.bd}`,color:C.tx},bOk:{background:C.ok,color:"#fff"},
+  bS:{padding:"7px 12px",fontSize:12},bBl:{width:"100%",boxSizing:"border-box"},
+  li:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 12px",background:C.sf,border:`1px solid ${C.bd}`,borderRadius:10,marginBottom:6,cursor:"pointer"},
+  badge:{display:"inline-block",padding:"2px 7px",borderRadius:8,fontSize:11,fontWeight:700},
+  fab:{position:"fixed",bottom:20,right:20,width:54,height:54,borderRadius:27,background:C.ac,color:"#fff",border:"none",fontSize:26,cursor:"pointer",boxShadow:"0 4px 24px rgba(77,163,255,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50},
+  modal:{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:200},
+  modalC:{background:C.sf,borderRadius:"16px 16px 0 0",padding:"16px 16px 32px",width:"100%",maxWidth:480,maxHeight:"88vh",overflowY:"auto"},
+  modalH:{width:36,height:4,borderRadius:2,background:C.tx3,margin:"0 auto 14px"},
+  numD:{fontSize:40,fontWeight:800,fontFamily:"SFMono-Regular,Consolas,monospace",textAlign:"center",padding:"12px 0",letterSpacing:"-2px",color:C.ac},
+  numG:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:5},
+  numK:{padding:"15px 0",borderRadius:8,border:`1px solid ${C.bd}`,background:C.sf2,color:C.tx,fontSize:20,fontWeight:700,cursor:"pointer",textAlign:"center",userSelect:"none"},
+  stat:{flex:1,background:C.sf2,borderRadius:8,padding:"9px 10px",textAlign:"center"},
+  statV:{fontSize:22,fontWeight:800,fontFamily:"monospace",letterSpacing:"-1px"},
+  statL:{fontSize:9,color:C.tx2,textTransform:"uppercase",letterSpacing:"0.8px",marginTop:2},
+  prog:{height:3,borderRadius:2,background:C.sf2,overflow:"hidden"},
+  progF:p=>({height:"100%",width:`${p}%`,background:C.ac,borderRadius:2,transition:"width 0.3s"}),
+  empty:{textAlign:"center",padding:"36px 20px",color:C.tx2},
+  srcB:(a,c)=>({width:28,height:24,borderRadius:5,border:`1.5px solid ${a?c:C.bd}`,background:a?c+"22":"transparent",color:a?c:C.tx3,fontSize:11,fontWeight:800,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}),
+  phG:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5,marginTop:6},
+  phT:{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:6,border:`1px solid ${C.bd}`},
+  tog:o=>({width:40,height:22,borderRadius:11,background:o?C.ac:C.sf2,border:`1px solid ${o?C.ac:C.bd}`,position:"relative",cursor:"pointer",flexShrink:0}),
+  togD:o=>({width:16,height:16,borderRadius:8,background:"#fff",position:"absolute",top:2,left:o?20:2,transition:"left 0.2s"}),
+};
+
+// Components
+function SrcPick({value:v,onChange:ch}){
+  const cs={M:C.sM,H:C.sH,P:C.sP};
+  return <div style={{display:"flex",gap:3}}>{DSRC.map(s=><div key={s} style={$.srcB(v===s,cs[s])} onClick={()=>ch(v===s?"":s)}>{s}</div>)}</div>;
+}
+
+function FldInp({k,def:d,value:v,source:s,onVal,onSrc}){
+  return <div style={{marginBottom:8}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><label style={$.lbl}>{d.label}</label>{d.src&&<SrcPick value={s} onChange={onSrc}/>}</div>
+    {d.t==="select"?<select style={{...$.sel,...$.selS}} value={v||""} onChange={e=>onVal(e.target.value)}><option value="">— Auswahl —</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>
+    :<input style={{...$.inp,...$.inpS}} type={d.t==="number"?"number":"text"} step={d.step||undefined} value={v||""} onChange={e=>onVal(e.target.value)} placeholder={d.ph||""}/>}
+  </div>;
+}
+
+function ZustInp({modus:m,value:v,onChange:ch}){
+  if(m==="Einfach")return <div style={{marginBottom:8}}><label style={$.lbl}>Zustand</label><div style={{display:"flex",gap:4}}>{ZU_SIMPLE.map(z=><button key={z} style={{...$.btn,...$.bS,padding:"5px 10px",fontSize:12,...(v===z?$.bP:$.bO)}} onClick={()=>ch(z)}>{z}</button>)}</div></div>;
+  if(m==="Freitext")return <div style={{marginBottom:8}}><label style={$.lbl}>Zustand</label><input style={{...$.inp,...$.inpS}} value={v||""} onChange={e=>ch(e.target.value)} placeholder="Zustand..."/></div>;
+  if(m==="Detailliert"){const sel=(v||"").split(";;").filter(Boolean);return <div style={{marginBottom:8}}><label style={$.lbl}>Zustand</label><div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{ZU_DET.map(z=>{const a=sel.includes(z);return <button key={z} style={{...$.btn,...$.bS,padding:"3px 7px",fontSize:11,...(a?$.bP:$.bO)}} onClick={()=>ch(a?sel.filter(x=>x!==z).join(";;"):[...sel,z].join(";;"))}>{z}</button>;})}</div></div>;}
+  return null;
+}
+
+function Photos({photos:ps,onAdd,onDel,label:l}){
+  const ref=useRef();
+  const h=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{const img=new Image();img.onload=()=>{const c=document.createElement("canvas");const mx=1200;let w=img.width,h=img.height;if(w>mx||h>mx){if(w>h){h=(h/w)*mx;w=mx;}else{w=(w/h)*mx;h=mx;}}c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);onAdd({id:uid(),data:c.toDataURL("image/jpeg",0.7),zeit:new Date().toISOString()});};img.src=ev.target.result;};r.readAsDataURL(f);e.target.value="";};
+  return <div>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length})</span><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>ref.current?.click()}>📷</button><input ref={ref} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/></div>
+    {ps.length>0&&<div style={$.phG}>{ps.map(p=><div key={p.id} style={{position:"relative"}}><img src={p.data} style={$.phT} alt=""/><div onClick={()=>onDel(p.id)} style={{position:"absolute",top:2,right:2,width:18,height:18,borderRadius:9,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,cursor:"pointer"}}>×</div></div>)}</div>}
+  </div>;
+}
+
+function NumPad({value:v,onChange:ch,onSubmit:sub}){
+  const pr=k=>{if(k==="DEL")ch(v.slice(0,-1));else if(k==="."){if(!v.includes("."))ch(v+".");}else ch(v+k);};
+  return <div>
+    <div style={$.numD}>{v||"—"}{v?" %":""}</div>
+    <div style={$.numG}>{["7","8","9","4","5","6","1","2","3"].map(k=><div key={k} style={$.numK} onClick={()=>pr(k)}>{k}</div>)}<div style={$.numK} onClick={()=>pr(".")}>.</div><div style={$.numK} onClick={()=>pr("0")}>0</div><div style={$.numK} onClick={()=>pr("DEL")}>⌫</div></div>
+    <div style={{display:"flex",gap:6,marginTop:8}}><button style={{...$.btn,...$.bO,flex:1}} onClick={()=>ch("")}>Löschen</button><button style={{...$.btn,...$.bP,flex:2}} onClick={()=>{if(v){sub(v);ch("");}}}>✓ Speichern</button></div>
+  </div>;
+}
+
+function Tog({value:v,onChange:ch,label:l}){
+  return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 0"}}><span style={{fontSize:13}}>{l}</span><div style={$.tog(v)} onClick={()=>ch(!v)}><div style={$.togD(v)}/></div></div>;
+}
+
+// Main App
+function App(){
+  const[projects,setProjects]=useState([]);
+  const[proj,setProj]=useState(null);
+  const[view,setView]=useState("home");
+  const[room,setRoom]=useState(null);
+  const[fen,setFen]=useState(null);
+  const[vg,setVg]=useState(null);
+  const[numVal,setNumVal]=useState("");
+  const[modal,setModal]=useState(null);
+  const[toast,setToast]=useState(null);
+  const[fmR,setFmR]=useState({geschoss:"EG",raumnummer:"",raumId:""});
+  const[fmF,setFmF]=useState({nr:"",va:2});
+  const[impTxt,setImpTxt]=useState("");
+  const[loading,setLoading]=useState(true);
+
+  useEffect(()=>{dbAll().then(d=>{setProjects(d||[]);setLoading(false);}).catch(()=>setLoading(false));},[]);
+  const flash=m=>{setToast(m);setTimeout(()=>setToast(null),2500);};
+
+  const save=async p=>{p.geaendert=new Date().toISOString();await dbPut(p);setProjects(pv=>{const i=pv.findIndex(x=>x.id===p.id);if(i>=0){const n=[...pv];n[i]=p;return n;}return[...pv,p];});setProj({...p});};
+  const gR=(p,id)=>p.rooms.find(r=>r.id===id);
+  const gF=(r,id)=>r?.fenster?.find(f=>f.id===id);
+  const gV=(f,id)=>f?.verglasungen?.find(v=>v.id===id);
+  const mut=fn=>{const p=JSON.parse(JSON.stringify(proj));fn(p);save(p);};
+
+  const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"verglasung",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],rooms:[]};setProj(p);setView("setup");};
+  const delProj=async id=>{await dbDel(id);setProjects(p=>p.filter(x=>x.id!==id));if(proj?.id===id){setProj(null);setView("home");}};
+  const impRooms=()=>{if(!impTxt.trim())return;const d=parseCSV(impTxt);if(!d.length){flash("Keine Daten");return;}mut(p=>{p.rooms=[...p.rooms,...d.map(r=>({id:uid(),geschoss:r.geschoss||r.floor||"",raumnummer:r.raumnummer||r.room||"",raumId:r.raumid||r.raum_id||r.id||"",fenster:[],photos:[]})).filter(r=>r.raumnummer||r.raumId)];});setImpTxt("");setModal(null);flash("Importiert");};
+  const impJSON=t=>{try{const d=JSON.parse(t);if(!d.id||!d.rooms){flash("Ungültig");return;}if(proj){mut(p=>{const ids=new Set(p.rooms.map(r=>r.id));p.rooms=[...p.rooms,...d.rooms.filter(r=>!ids.has(r.id))];});flash("Zusammengeführt");}else{save(d);flash("OK");}}catch{flash("Fehler");}};
+
+  const addRoom=()=>{if(!fmR.raumnummer&&!fmR.raumId)return;mut(p=>{p.rooms.push({id:uid(),...fmR,fenster:[],photos:[]});});setFmR({geschoss:fmR.geschoss,raumnummer:"",raumId:""});setModal(null);flash("Raum +");};
+  const delRoom=rId=>{mut(p=>{p.rooms=p.rooms.filter(r=>r.id!==rId);});if(room?.id===rId){setRoom(null);setView("survey");}};
+
+  const addFen=(rId,nr,va)=>{mut(p=>{const r=gR(p,rId);if(!r)return;if(p.modus==="fenster"){r.fenster.push({id:uid(),nr:nr||`F${(r.fenster.length||0)+1}`,verglasungen:Array.from({length:va||1},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),data:{},sources:{},photos:[],notizen:""});}else{r.fenster.push({id:uid(),nr:`V${(r.fenster.length||0)+1}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});}});};
+  const quickAdd=(rId,n)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const s=(r.fenster.length||0)+1;for(let i=0;i<n;i++)r.fenster.push({id:uid(),nr:`V${s+i}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});});flash(`+${n}`);};
+
+  const addMs=(rId,fId,vId,val)=>{mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v)v.messungen.push({wert:parseFloat(val),zeit:new Date().toISOString()});});flash(`${val}%`);};
+  const delMs=(rId,fId,vId,mi)=>{mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v)v.messungen.splice(mi,1);});};
+  const setFV=(rId,fId,vId,k,val)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.data)t.data={};t.data[k]=val;}});};
+  const setFS=(rId,fId,vId,k,s)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.sources)t.sources={};t.sources[k]=s;}});};
+  const setZu=(rId,fId,v)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.zustandRahmen=v;});};
+  const addPh=(rId,fId,vId,ph)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t){if(!t.photos)t.photos=[];t.photos.push(ph);}});};
+  const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});};
+
+  const pSt=p=>{let g=0,m=0,ph=0;(p?.rooms||[]).forEach(r=>{ph+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{ph+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;ph+=(v.photos||[]).length;});});});return{rooms:(p?.rooms||[]).length,g,m,ph};};
+  const rSt=r=>{let g=0,m=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;}));return{f:(r?.fenster||[]).length,g,m};};
+
+  const isA=k=>(proj?.activeFields||[]).includes(k);
+  const fFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&isA(k));
+  const vFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&isA(k));
+  const hasZ=()=>proj?.zustandModus&&proj.zustandModus!=="Keine"&&isA("zustandRahmen");
+
+  if(loading)return <div style={{...$.app,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><span style={{color:C.tx2}}>Laden...</span></div>;
+  const Toast=toast?<div style={{position:"fixed",bottom:80,left:"50%",transform:"translateX(-50%)",background:C.sf2,color:C.tx,padding:"9px 18px",borderRadius:8,fontSize:14,fontWeight:600,zIndex:300,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",border:`1px solid ${C.bd}`}}>{toast}</div>:null;
+
+  // HOME
+  if(view==="home")return <div style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div></div><div style={$.body}>
+    {projects.length===0?<div style={$.empty}><div style={{fontSize:44,marginBottom:10}}>📋</div><div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Kein Projekt</div><div style={{fontSize:13,marginBottom:18}}>Erstellen Sie ein Projekt.</div><button style={{...$.btn,...$.bP}} onClick={createProj}>+ Neues Projekt</button></div>
+    :<>{projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}</>}
+  </div>{projects.length>0&&<button style={$.fab} onClick={createProj}>+</button>}{Toast}</div>;
+
+  // SETUP
+  if(view==="setup"){const p=proj;const af=new Set(p.activeFields||[]);const togF=k=>{const n=new Set(af);if(n.has(k))n.delete(k);else n.add(k);setProj({...p,activeFields:[...n]});};
+  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(p.rooms?.length?"survey":"home")}>← Zurück</button><div style={$.hdrT}>Einrichtung</div><button style={$.hdrB} onClick={()=>{save(p);setView("survey");flash("✓");}}>Fertig</button></div><div style={$.body}>
+    <div style={$.card}><div style={$.cardT}>Projekt</div><div style={{marginBottom:8}}><label style={$.lbl}>Name</label><input style={$.inp} value={p.name||""} onChange={e=>setProj({...p,name:e.target.value})} placeholder="Projektname"/></div><div style={{marginBottom:8}}><label style={$.lbl}>Gebäude</label><input style={$.inp} value={p.gebaeude||""} onChange={e=>setProj({...p,gebaeude:e.target.value})}/></div><div><label style={$.lbl}>Adresse</label><input style={$.inp} value={p.adresse||""} onChange={e=>setProj({...p,adresse:e.target.value})}/></div></div>
+    <div style={$.card}><div style={$.cardT}>Modus</div><div style={{display:"flex",gap:8}}>{[["verglasung","◻","Nur Verglasungen"],["fenster","⊞","Fenster + Verglasung"]].map(([m,i,t])=><div key={m} onClick={()=>setProj({...p,modus:m})} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center"}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
+    <div style={$.card}><div style={$.cardT}>Zustand Rahmen</div><div style={{display:"flex",gap:4}}>{["Keine","Einfach","Freitext","Detailliert"].map(z=><div key={z} onClick={()=>setProj({...p,zustandModus:z})} style={{flex:1,padding:"7px 2px",borderRadius:6,border:`1px solid ${(p.zustandModus||"Keine")===z?C.ac:C.bd}`,background:(p.zustandModus||"Keine")===z?C.acBg:"transparent",cursor:"pointer",textAlign:"center",fontSize:11,fontWeight:600}}>{z}</div>)}</div></div>
+    <div style={$.card}><div style={$.cardT}>Profil</div><div style={{display:"flex",gap:6,marginBottom:10}}>{Object.entries(PRESETS).map(([k,pr])=><button key={k} style={{...$.btn,...$.bO,...$.bS,flex:1,flexDirection:"column",padding:"8px 4px",height:"auto"}} onClick={()=>setProj({...p,activeFields:[...pr.fields]})}><span style={{fontWeight:700,fontSize:12}}>{pr.name}</span><span style={{fontSize:9,color:C.tx2}}>{pr.desc}</span></button>)}</div>
+      <div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4}}>FENSTER</div>{Object.entries(FIELDS).filter(([,d])=>d.g==="f").map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}
+      <div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4,marginTop:12}}>VERGLASUNG</div>{Object.entries(FIELDS).filter(([,d])=>d.g==="v").map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}</div>
+    <div style={$.card}><div style={$.cardT}>CSV-Import</div><textarea style={{...$.inp,minHeight:60,fontFamily:"monospace",fontSize:11}} value={impTxt} onChange={e=>setImpTxt(e.target.value)} placeholder="geschoss;raumnummer;raumid"/><button style={{...$.btn,...$.bP,...$.bBl,marginTop:6}} onClick={impRooms}>Importieren</button></div>
+    <div style={$.card}><div style={$.cardT}>JSON zusammenführen</div><input type="file" accept=".json" style={{fontSize:12,color:C.tx2}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>impJSON(ev.target.result);r.readAsText(f);}}}/></div>
+    <div style={$.card}><div style={$.cardT}>Legende</div><div style={{display:"flex",gap:12,fontSize:12}}><span><b style={{color:C.sM}}>M</b> Messwert</span><span><b style={{color:C.sH}}>H</b> Herstellerang.</span><span><b style={{color:C.sP}}>P</b> Planungsdaten</span></div></div>
+    {p.id&&projects.find(x=>x.id===p.id)&&<div style={{...$.card,borderColor:C.err+"40"}}><button style={{...$.btn,...$.bD,...$.bS}} onClick={()=>{if(confirm("Projekt löschen?"))delProj(p.id);}}>Projekt löschen</button></div>}
+  </div>{Toast}</div>;}
+
+  // SURVEY
+  if(view==="survey"){const p=proj;const s=pSt(p);
+    const byF={};(p.rooms||[]).forEach(r=>{const f=r.geschoss||"?";if(!byF[f])byF[f]=[];byF[f].push(r);});
+    const fls=FLOORS.filter(f=>byF[f]);Object.keys(byF).forEach(f=>{if(!fls.includes(f))fls.push(f);});
+  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div style={$.body}>
+    <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{s.rooms}</div><div style={$.statL}>Räume</div></div><div style={$.stat}><div style={$.statV}>{s.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{s.m}</div><div style={$.statL}>Mess.</div></div><div style={$.stat}><div style={$.statV}>{s.ph}</div><div style={$.statL}>Fotos</div></div></div>
+    <div style={{...$.card,padding:12}}><div style={$.cardT}>Export</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+      <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler: "+e.message);}}}>📊 Excel</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doCSVExport(p);flash("CSV ✓");}}>📄 CSV</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p);flash("Backup ✓");}}>💾 Backup</button>
+      {s.ph>0&&<button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={async()=>{flash("Fotos...");const n=await doPhotoExport(p);flash(`${n} Fotos ✓`);}}>📷 Fotos ({s.ph})</button>}
+    </div></div>
+    {fls.length===0?<div style={$.empty}><div style={{fontSize:38,marginBottom:8}}>🏢</div><div style={{fontWeight:700}}>Keine Räume</div></div>
+    :fls.map(fl=><div key={fl} style={{marginBottom:14}}><div style={{...$.cardT,display:"flex",alignItems:"center",gap:6}}><span style={{...$.badge,background:C.acBg,color:C.ac}}>{fl}</span>{byF[fl].length} Räume</div>
+      {byF[fl].map(rm=>{const rs=rSt(rm);const pct=rs.g>0?Math.round(rs.m/rs.g*100):0;return <div key={rm.id} style={$.li} onClick={()=>{setRoom(rm);setView("room");}}><div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>{rm.raumnummer||rm.raumId||"—"}{rm.raumId&&rm.raumnummer&&<span style={{fontSize:11,color:C.tx2,marginLeft:5}}>({rm.raumId})</span>}</div><div style={{fontSize:11,color:C.tx2}}>{rs.g} Vgl · {rs.m} M</div></div><div style={{display:"flex",alignItems:"center",gap:6}}>{pct>=100?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:pct>0?<span style={{...$.badge,background:C.warnBg,color:C.warn}}>{pct}%</span>:null}<span style={{color:C.tx3}}>›</span></div></div>;})}</div>)}
+  </div><button style={$.fab} onClick={()=>{setFmR({geschoss:"EG",raumnummer:"",raumId:""});setModal("addR");}}>+</button>
+    {modal==="addR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Raum hinzufügen</div><div style={{marginBottom:8}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={fmR.geschoss} onChange={e=>setFmR({...fmR,geschoss:e.target.value})}>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div><div style={{marginBottom:8}}><label style={$.lbl}>Raumnummer</label><input style={$.inp} value={fmR.raumnummer} onChange={e=>setFmR({...fmR,raumnummer:e.target.value})} placeholder="z.B. 101" autoFocus/></div><div style={{marginBottom:14}}><label style={$.lbl}>Raum-ID</label><input style={$.inp} value={fmR.raumId} onChange={e=>setFmR({...fmR,raumId:e.target.value})}/></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={addRoom}>Hinzufügen</button></div></div>}
+  {Toast}</div>;}
+
+  // ROOM
+  if(view==="room"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);if(!rm){setView("survey");return null;}
+    const rs=rSt(rm);const isV=p.modus==="verglasung";const ff=fFs();const vf=vFs();
+  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}</div><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div style={$.body}>
+    <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
+    {isV&&<div style={{display:"flex",gap:5,marginBottom:10,alignItems:"center"}}><span style={{fontSize:11,color:C.tx2,fontWeight:600}}>Schnell:</span>{[1,2,5,10].map(n=><button key={n} style={{...$.btn,...$.bO,...$.bS,padding:"6px 10px"}} onClick={()=>quickAdd(rm.id,n)}>+{n}</button>)}</div>}
+    <div style={$.card}><Photos label="Raum-Fotos" photos={rm.photos||[]} onAdd={ph=>addPh(rm.id,null,null,ph)} onDel={pid=>delPh(rm.id,null,null,pid)}/></div>
+    {(rm.fenster||[]).length===0?<div style={$.empty}><div style={{fontSize:32,marginBottom:6}}>{isV?"◻":"⊞"}</div><div style={{fontWeight:700,fontSize:14}}>{isV?"Keine Verglasungen":"Keine Fenster"}</div></div>
+    :(rm.fenster||[]).map(f=>{
+      if(isV){const v=f.verglasungen[0];const lm=v?.messungen?.[v.messungen.length-1];return <div key={f.id} style={{...$.li,flexDirection:"column",alignItems:"stretch"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontWeight:800,fontSize:15}}>{f.nr}</span>{lm&&<span style={{fontFamily:"monospace",fontSize:15,color:C.ac,fontWeight:700}}>{lm.wert}%</span>}{(v?.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf2,color:C.tx2}}>{v.messungen.length}×</span>}</div><div style={{display:"flex",alignItems:"center",gap:6}}>{lm?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:<span style={{...$.badge,background:C.sf2,color:C.tx3}}>offen</span>}<span style={{color:C.tx3}}>›</span></div></div>
+        {vf.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{vf.slice(0,3).map(([k,d])=><div key={k} style={{flex:1,minWidth:80}}>{d.t==="select"?<select style={{...$.sel,...$.selS,fontSize:11}} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}><option value="">{d.label.split(" ")[0]}...</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>:<input style={{...$.inp,...$.inpS,fontSize:11}} placeholder={d.label.split("[")[0]} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}/>}</div>)}</div>}
+      </div>;}
+      else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16}}>🪟 {f.nr}</span>{f.verglasungen?.every(v=>v.messungen?.length>0)&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}</div>
+        {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)}/>)}</div>}
+        {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
+        {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontWeight:700,fontSize:13}}>V{v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700}}>{lm.wert}%</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}</div><span style={{color:C.tx3}}>›</span></div>;})}
+        <div style={{marginTop:6}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div></div>;
+    })}
+  </div><button style={$.fab} onClick={()=>{if(isV){addFen(rm.id);flash("Verglasung +");}else{setFmF({nr:`F${(rm.fenster?.length||0)+1}`,va:2});setModal("addF");}}}>+</button>
+    {modal==="addF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Fenster hinzufügen</div><div style={{marginBottom:8}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={fmF.nr} onChange={e=>setFmF({...fmF,nr:e.target.value})} autoFocus/></div><div style={{marginBottom:14}}><label style={$.lbl}>Verglasungen</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,6].map(n=><button key={n} style={{...$.btn,flex:1,...(fmF.va===n?$.bP:$.bO)}} onClick={()=>setFmF({...fmF,va:n})}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{addFen(rm.id,fmF.nr,fmF.va);setModal(null);flash("Fenster +");}}>Hinzufügen</button></div></div>}
+  {Toast}</div>;}
+
+  // MEASURE
+  if(view==="measure"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);const v=f?.verglasungen?.find(x=>x.id===vg?.id);
+    if(!rm||!f||!v){setView("room");return null;}
+    const isV=p.modus==="verglasung";const label=isV?f.nr:`${f.nr} · V${v.nr}`;const vf=vFs();
+    let all=[];rm.fenster.forEach(x=>x.verglasungen.forEach(y=>all.push({f:x,v:y})));const idx=all.findIndex(x=>x.v.id===v.id);const tot=all.length;const msd=all.filter(x=>x.v.messungen?.length>0).length;
+    const go=i=>{if(i>=0&&i<tot){setFen(all[i].f);setVg(all[i].v);setNumVal("");}};
+  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("room")}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div style={$.body}>
+    <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>{idx+1}/{tot}</span><span>{msd}/{tot} gemessen</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
+    <div style={$.card}><div style={{...$.cardT,textAlign:"center"}}>Gasfüllgrad</div><NumPad value={numVal} onChange={setNumVal} onSubmit={val=>addMs(rm.id,f.id,v.id,val)}/></div>
+    {(v.messungen?.length||0)>0&&<div style={$.card}><div style={$.cardT}>Messungen ({v.messungen.length})</div>{v.messungen.map((m,mi)=><div key={mi} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:mi<v.messungen.length-1?`1px solid ${C.bd}`:"none"}}><div><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert}%</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div><button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:16,padding:4}} onClick={()=>delMs(rm.id,f.id,v.id,mi)}>×</button></div>)}</div>}
+    {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasungsdaten</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)}/>)}</div>}
+    {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><input style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onChange={e=>setFV(rm.id,f.id,v.id,"stempel",e.target.value)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
+    <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
+    <div style={{display:"flex",gap:6,marginTop:8}}>{idx>0&&<button style={{...$.btn,...$.bO,flex:1}} onClick={()=>go(idx-1)}>← Vorherige</button>}{idx<tot-1?<button style={{...$.btn,...$.bP,flex:1}} onClick={()=>go(idx+1)}>Nächste →</button>:<button style={{...$.btn,...$.bOk,flex:1}} onClick={()=>setView("room")}>✓ Raum fertig</button>}</div>
+  </div>{Toast}</div>;}
+
+  return null;
+}
+
+// Register Service Worker
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('./sw.js').then(()=>console.log('SW registered')).catch(()=>console.log('SW failed'));
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
