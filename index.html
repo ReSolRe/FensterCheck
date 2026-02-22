@@ -290,7 +290,48 @@ function App(){
 
   const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"verglasung",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],defaults:{},rooms:[]};setProj(p);setView("setup");};
   const delProj=async id=>{await dbDel(id);setProjects(p=>p.filter(x=>x.id!==id));if(proj?.id===id){setProj(null);setView("home");}};
-  const impRooms=()=>{if(!impTxt.trim())return;const d=parseCSV(impTxt);if(!d.length){flash("Keine Daten");return;}mut(p=>{p.rooms=[...p.rooms,...d.map(r=>({id:uid(),geschoss:r.geschoss||r.floor||"",raumnummer:r.raumnummer||r.room||"",raumId:r.raumid||r.raum_id||r.id||"",fenster:[],photos:[]})).filter(r=>r.raumnummer||r.raumId)];});setImpTxt("");setModal(null);flash("Importiert");};
+  const impRooms=()=>{if(!impTxt.trim())return;const d=parseCSV(impTxt);if(!d.length){flash("Keine Daten");return;}
+    mut(p=>{
+      const newRooms=d.map(r=>{
+        const geschoss=r.geschoss||r.floor||"";
+        const raumnummer=r.raumnummer||r.room||"";
+        const raumId=r.raumid||r.raum_id||r.id||"";
+        if(!raumnummer&&!raumId)return null;
+        const rm={id:uid(),geschoss,raumnummer,raumId,fenster:[],photos:[]};
+        // Parse optional columns
+        const nFen=parseInt(r.fenster||r.anzahl_fenster||r.windows||"0")||0;
+        const nVgJeFen=parseInt(r.verglasungen_je_fenster||r.vg_je_fenster||r.glazings_per_window||"0")||0;
+        const nVgTotal=parseInt(r.verglasungen||r.anzahl_verglasungen||r.glazings||"0")||0;
+        if(p.modus==="fenster"&&nFen>0){
+          // Fenster+Verglasung mode: create fenster with verglasungen
+          const vgPer=nVgJeFen||1;
+          for(let fi=0;fi<nFen;fi++){
+            rm.fenster.push({id:uid(),nr:`F${fi+1}`,
+              verglasungen:Array.from({length:vgPer},(_,vi)=>({id:uid(),nr:vi+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),
+              data:{},sources:{},photos:[],notizen:""});
+          }
+        } else if(nVgTotal>0){
+          // Nur-Verglasung mode or fallback: create verglasungen directly
+          for(let vi=0;vi<nVgTotal;vi++){
+            rm.fenster.push({id:uid(),nr:`V${vi+1}`,isVg:1,
+              verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],
+              data:{},sources:{},photos:[],notizen:""});
+          }
+        } else if(nFen>0&&p.modus==="verglasung"){
+          // Fenster-Anzahl in Verglasung-Modus → als Verglasungen interpretieren
+          const total=nFen*(nVgJeFen||1);
+          for(let vi=0;vi<total;vi++){
+            rm.fenster.push({id:uid(),nr:`V${vi+1}`,isVg:1,
+              verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],
+              data:{},sources:{},photos:[],notizen:""});
+          }
+        }
+        return rm;
+      }).filter(Boolean);
+      p.rooms=[...p.rooms,...newRooms];
+    });
+    const parsed=parseCSV(impTxt);const nR=parsed.filter(r=>r.raumnummer||r.raumid||r.raum_id||r.id||r.room).length;
+    setImpTxt("");flash(`${nR} Räume importiert`);};
   const impJSON=t=>{try{const d=JSON.parse(t);if(!d.id||!d.rooms){flash("Ungültig");return;}if(proj){mut(p=>{const ids=new Set(p.rooms.map(r=>r.id));p.rooms=[...p.rooms,...d.rooms.filter(r=>!ids.has(r.id))];});flash("Zusammengeführt");}else{save(d);flash("OK");}}catch{flash("Fehler");}};
 
   const addRoom=()=>{if(!fmR.raumnummer&&!fmR.raumId)return;mut(p=>{p.rooms.push({id:uid(),...fmR,fenster:[],photos:[]});});setFmR({geschoss:fmR.geschoss,raumnummer:"",raumId:""});setModal(null);flash("Raum +");};
@@ -366,7 +407,32 @@ function App(){
       })}
     </div>
 
-    <div style={$.card}><div style={$.cardT}>CSV-Import</div><textarea style={{...$.inp,minHeight:60,fontFamily:"monospace",fontSize:11}} value={impTxt} onChange={e=>setImpTxt(e.target.value)} placeholder="geschoss;raumnummer;raumid"/><button style={{...$.btn,...$.bP,...$.bBl,marginTop:6}} onClick={impRooms}>Importieren</button></div>
+    <div style={$.card}><div style={$.cardT}>Raumimport (CSV)</div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:4}}>Pflicht: <b>geschoss</b>, <b>raumnummer</b> (opt. <b>raumid</b>)</div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Optional: <b>fenster</b>, <b>verglasungen_je_fenster</b>, <b>verglasungen</b></div>
+      <div style={{display:"flex",gap:6,marginBottom:6}}>
+        <label style={{...$.btn,...$.bO,...$.bS,flex:1,cursor:"pointer"}}>
+          📂 CSV-Datei auswählen
+          <input type="file" accept=".csv,.txt,.tsv" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>setImpTxt(ev.target.result);r.readAsText(f);e.target.value="";}}/>
+        </label>
+      </div>
+      {impTxt&&(()=>{
+        const parsed=parseCSV(impTxt);const cols=impTxt.trim().split(/\r?\n/)[0]?.split(/[;,\t]/).map(h=>h.trim().toLowerCase())||[];
+        const hasFen=cols.some(c=>["fenster","anzahl_fenster","windows"].includes(c));
+        const hasVg=cols.some(c=>["verglasungen","anzahl_verglasungen","glazings"].includes(c));
+        const hasVgJe=cols.some(c=>["verglasungen_je_fenster","vg_je_fenster","glazings_per_window"].includes(c));
+        return <div style={{background:C.sf2,borderRadius:8,padding:8,marginBottom:6,fontSize:11}}>
+          <div style={{color:C.ok,fontWeight:700,marginBottom:4}}>✓ {parsed.length} Räume erkannt</div>
+          <div style={{color:C.tx2}}>Spalten: {cols.join(", ")}</div>
+          {hasFen&&<div style={{color:C.ac,marginTop:2}}>↳ Fenster pro Raum: ✓</div>}
+          {hasVgJe&&<div style={{color:C.ac}}>↳ Verglasungen je Fenster: ✓</div>}
+          {hasVg&&<div style={{color:C.ac}}>↳ Verglasungen pro Raum: ✓</div>}
+          {parsed.length>0&&<div style={{marginTop:4,color:C.tx3}}>Vorschau: {parsed.slice(0,3).map(r=>`${r.geschoss||"?"} / ${r.raumnummer||r.room||"?"}`).join(" · ")}{parsed.length>3?"  …":""}</div>}
+        </div>;
+      })()}
+      <textarea style={{...$.inp,minHeight:50,fontFamily:"monospace",fontSize:11}} value={impTxt} onChange={e=>setImpTxt(e.target.value)} placeholder={"geschoss;raumnummer;raumid;verglasungen\nEG;101;R101;6\nOG1;201;R201;4\n\noder mit Fenstern:\ngeschoss;raumnummer;fenster;verglasungen_je_fenster\nEG;101;3;2\nOG1;201;2;2"}/>
+      <button style={{...$.btn,...$.bP,...$.bBl,marginTop:6}} onClick={impRooms}>Importieren</button>
+    </div>
     <div style={$.card}><div style={$.cardT}>JSON zusammenführen</div><input type="file" accept=".json" style={{fontSize:12,color:C.tx2}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>impJSON(ev.target.result);r.readAsText(f);}}}/></div>
     <div style={$.card}><div style={$.cardT}>Legende</div><div style={{display:"flex",gap:12,fontSize:12}}><span><b style={{color:C.sM}}>M</b> Messwert</span><span><b style={{color:C.sH}}>H</b> Herstellerang.</span><span><b style={{color:C.sP}}>P</b> Planungsdaten</span></div></div>
     {p.id&&projects.find(x=>x.id===p.id)&&<div style={{...$.card,borderColor:C.err+"40"}}><button style={{...$.btn,...$.bD,...$.bS}} onClick={()=>{if(confirm("Projekt löschen?"))delProj(p.id);}}>Projekt löschen</button></div>}
