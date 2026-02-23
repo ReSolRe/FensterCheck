@@ -291,46 +291,78 @@ function App(){
   const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"verglasung",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],defaults:{},rooms:[]};setProj(p);setView("setup");};
   const delProj=async id=>{await dbDel(id);setProjects(p=>p.filter(x=>x.id!==id));if(proj?.id===id){setProj(null);setView("home");}};
   const impRooms=()=>{if(!impTxt.trim())return;const d=parseCSV(impTxt);if(!d.length){flash("Keine Daten");return;}
+    const hasPerWindow=d.some(r=>r.fenster_nr||r.fensternr||r.window_nr);
     mut(p=>{
-      const newRooms=d.map(r=>{
-        const geschoss=r.geschoss||r.floor||"";
-        const raumnummer=r.raumnummer||r.room||"";
-        const raumId=r.raumid||r.raum_id||r.id||"";
-        if(!raumnummer&&!raumId)return null;
-        const rm={id:uid(),geschoss,raumnummer,raumId,fenster:[],photos:[]};
-        // Parse optional columns
-        const nFen=parseInt(r.fenster||r.anzahl_fenster||r.windows||"0")||0;
-        const nVgJeFen=parseInt(r.verglasungen_je_fenster||r.vg_je_fenster||r.glazings_per_window||"0")||0;
-        const nVgTotal=parseInt(r.verglasungen||r.anzahl_verglasungen||r.glazings||"0")||0;
-        if(p.modus==="fenster"&&nFen>0){
-          // Fenster+Verglasung mode: create fenster with verglasungen
-          const vgPer=nVgJeFen||1;
-          for(let fi=0;fi<nFen;fi++){
-            rm.fenster.push({id:uid(),nr:`F${fi+1}`,
-              verglasungen:Array.from({length:vgPer},(_,vi)=>({id:uid(),nr:vi+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),
-              data:{},sources:{},photos:[],notizen:""});
+      if(hasPerWindow){
+        const groups=new Map();
+        d.forEach(r=>{
+          const geschoss=r.geschoss||r.floor||"";
+          const raumnummer=r.raumnummer||r.room||"";
+          const raumId=r.raumid||r.raum_id||r.id||"";
+          if(!raumnummer&&!raumId)return;
+          const key=`${geschoss}||${raumnummer}||${raumId}`;
+          if(!groups.has(key))groups.set(key,{geschoss,raumnummer,raumId,windows:[]});
+          const fnr=r.fenster_nr||r.fensternr||r.window_nr||"";
+          const nVg=parseInt(r.verglasungen||r.anzahl_verglasungen||r.glazings||"1")||1;
+          groups.get(key).windows.push({nr:fnr,nVg});
+        });
+        groups.forEach(g=>{
+          const rm={id:uid(),geschoss:g.geschoss,raumnummer:g.raumnummer,raumId:g.raumId,fenster:[],photos:[]};
+          g.windows.forEach((w,wi)=>{
+            const nr=w.nr||`F${wi+1}`;
+            if(p.modus==="fenster"){
+              rm.fenster.push({id:uid(),nr,
+                verglasungen:Array.from({length:w.nVg},(_,vi)=>({id:uid(),nr:vi+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),
+                data:{},sources:{},photos:[],notizen:""});
+            } else {
+              for(let vi=0;vi<w.nVg;vi++){
+                rm.fenster.push({id:uid(),nr:`V${rm.fenster.length+1}`,isVg:1,
+                  verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],
+                  data:{},sources:{},photos:[],notizen:""});
+              }
+            }
+          });
+          p.rooms.push(rm);
+        });
+      } else {
+        const newRooms=d.map(r=>{
+          const geschoss=r.geschoss||r.floor||"";
+          const raumnummer=r.raumnummer||r.room||"";
+          const raumId=r.raumid||r.raum_id||r.id||"";
+          if(!raumnummer&&!raumId)return null;
+          const rm={id:uid(),geschoss,raumnummer,raumId,fenster:[],photos:[]};
+          const nFen=parseInt(r.fenster||r.anzahl_fenster||r.windows||"0")||0;
+          const nVgJeFen=parseInt(r.verglasungen_je_fenster||r.vg_je_fenster||r.glazings_per_window||"0")||0;
+          const nVgTotal=parseInt(r.verglasungen||r.anzahl_verglasungen||r.glazings||"0")||0;
+          if(p.modus==="fenster"&&nFen>0){
+            const vgPer=nVgJeFen||1;
+            for(let fi=0;fi<nFen;fi++){
+              rm.fenster.push({id:uid(),nr:`F${fi+1}`,
+                verglasungen:Array.from({length:vgPer},(_,vi)=>({id:uid(),nr:vi+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),
+                data:{},sources:{},photos:[],notizen:""});
+            }
+          } else if(nVgTotal>0){
+            for(let vi=0;vi<nVgTotal;vi++){
+              rm.fenster.push({id:uid(),nr:`V${vi+1}`,isVg:1,
+                verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],
+                data:{},sources:{},photos:[],notizen:""});
+            }
+          } else if(nFen>0&&p.modus==="verglasung"){
+            const total=nFen*(nVgJeFen||1);
+            for(let vi=0;vi<total;vi++){
+              rm.fenster.push({id:uid(),nr:`V${vi+1}`,isVg:1,
+                verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],
+                data:{},sources:{},photos:[],notizen:""});
+            }
           }
-        } else if(nVgTotal>0){
-          // Nur-Verglasung mode or fallback: create verglasungen directly
-          for(let vi=0;vi<nVgTotal;vi++){
-            rm.fenster.push({id:uid(),nr:`V${vi+1}`,isVg:1,
-              verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],
-              data:{},sources:{},photos:[],notizen:""});
-          }
-        } else if(nFen>0&&p.modus==="verglasung"){
-          // Fenster-Anzahl in Verglasung-Modus → als Verglasungen interpretieren
-          const total=nFen*(nVgJeFen||1);
-          for(let vi=0;vi<total;vi++){
-            rm.fenster.push({id:uid(),nr:`V${vi+1}`,isVg:1,
-              verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],
-              data:{},sources:{},photos:[],notizen:""});
-          }
-        }
-        return rm;
-      }).filter(Boolean);
-      p.rooms=[...p.rooms,...newRooms];
+          return rm;
+        }).filter(Boolean);
+        p.rooms=[...p.rooms,...newRooms];
+      }
     });
-    const parsed=parseCSV(impTxt);const nR=parsed.filter(r=>r.raumnummer||r.raumid||r.raum_id||r.id||r.room).length;
+    const parsed=parseCSV(impTxt);
+    const hasWin=parsed.some(r=>r.fenster_nr||r.fensternr||r.window_nr);
+    const nR=hasWin?new Set(parsed.map(r=>`${r.geschoss||""}|${r.raumnummer||r.room||""}`)).size:parsed.filter(r=>r.raumnummer||r.raumid||r.raum_id||r.id||r.room).length;
     setImpTxt("");flash(`${nR} Räume importiert`);};
   const impJSON=(t,merge)=>{try{const d=JSON.parse(t);if(!d.id||!d.rooms){flash("Ungültig");return;}if(merge&&proj){mut(p=>{const ids=new Set(p.rooms.map(r=>r.id));const added=d.rooms.filter(r=>!ids.has(r.id));p.rooms=[...p.rooms,...added];});flash("Zusammengeführt");}else{d.id=uid();d.geaendert=new Date().toISOString();save(d);setProjects(pv=>[...pv,d]);setProj(d);setView("survey");flash(`Projekt «${d.name||"Import"}» importiert`);}}catch{flash("Fehler: ungültige JSON-Datei");}};
 
@@ -413,7 +445,7 @@ function App(){
 
     <div style={$.card}><div style={$.cardT}>Raumimport (CSV)</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:4}}>Pflicht: <b>geschoss</b>, <b>raumnummer</b> (opt. <b>raumid</b>)</div>
-      <div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Optional: <b>fenster</b>, <b>verglasungen_je_fenster</b>, <b>verglasungen</b></div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Optional: <b>verglasungen</b>, <b>fenster</b>, <b>verglasungen_je_fenster</b>, <b>fenster_nr</b></div>
       <div style={{display:"flex",gap:6,marginBottom:6}}>
         <label style={{...$.btn,...$.bO,...$.bS,flex:1,cursor:"pointer"}}>
           📂 CSV-Datei auswählen
@@ -425,16 +457,20 @@ function App(){
         const hasFen=cols.some(c=>["fenster","anzahl_fenster","windows"].includes(c));
         const hasVg=cols.some(c=>["verglasungen","anzahl_verglasungen","glazings"].includes(c));
         const hasVgJe=cols.some(c=>["verglasungen_je_fenster","vg_je_fenster","glazings_per_window"].includes(c));
+        const hasFenNr=cols.some(c=>["fenster_nr","fensternr","window_nr"].includes(c));
+        const nRooms=hasFenNr?new Set(parsed.map(r=>`${r.geschoss||""}|${r.raumnummer||r.room||""}`)).size:parsed.length;
+        const nWindows=hasFenNr?parsed.length:0;
         return <div style={{background:C.sf2,borderRadius:8,padding:8,marginBottom:6,fontSize:11}}>
-          <div style={{color:C.ok,fontWeight:700,marginBottom:4}}>✓ {parsed.length} Räume erkannt</div>
+          <div style={{color:C.ok,fontWeight:700,marginBottom:4}}>✓ {nRooms} Räume erkannt{hasFenNr?`, ${nWindows} Fenster`:""}</div>
           <div style={{color:C.tx2}}>Spalten: {cols.join(", ")}</div>
-          {hasFen&&<div style={{color:C.ac,marginTop:2}}>↳ Fenster pro Raum: ✓</div>}
-          {hasVgJe&&<div style={{color:C.ac}}>↳ Verglasungen je Fenster: ✓</div>}
-          {hasVg&&<div style={{color:C.ac}}>↳ Verglasungen pro Raum: ✓</div>}
-          {parsed.length>0&&<div style={{marginTop:4,color:C.tx3}}>Vorschau: {parsed.slice(0,3).map(r=>`${r.geschoss||"?"} / ${r.raumnummer||r.room||"?"}`).join(" · ")}{parsed.length>3?"  …":""}</div>}
+          {hasFenNr&&<div style={{color:C.ac,marginTop:2}}>↳ Je Fenster unterschiedliche Verglasungsanzahl: ✓</div>}
+          {hasFen&&!hasFenNr&&<div style={{color:C.ac,marginTop:2}}>↳ Fenster pro Raum: ✓</div>}
+          {hasVgJe&&!hasFenNr&&<div style={{color:C.ac}}>↳ Verglasungen je Fenster: ✓</div>}
+          {hasVg&&!hasFenNr&&<div style={{color:C.ac}}>↳ Verglasungen pro Raum: ✓</div>}
+          {parsed.length>0&&<div style={{marginTop:4,color:C.tx3}}>Vorschau: {parsed.slice(0,3).map(r=>`${r.geschoss||"?"} / ${r.raumnummer||r.room||"?"}${r.fenster_nr||r.fensternr?" · "+( r.fenster_nr||r.fensternr):""}`).join(" · ")}{parsed.length>3?"  …":""}</div>}
         </div>;
       })()}
-      <textarea style={{...$.inp,minHeight:50,fontFamily:"monospace",fontSize:11}} value={impTxt} onChange={e=>setImpTxt(e.target.value)} placeholder={"geschoss;raumnummer;raumid;verglasungen\nEG;101;R101;6\nOG1;201;R201;4\n\noder mit Fenstern:\ngeschoss;raumnummer;fenster;verglasungen_je_fenster\nEG;101;3;2\nOG1;201;2;2"}/>
+      <textarea style={{...$.inp,minHeight:50,fontFamily:"monospace",fontSize:11}} value={impTxt} onChange={e=>setImpTxt(e.target.value)} placeholder={"geschoss;raumnummer;verglasungen\nEG;101;6\nOG1;201;4\n\noder je Fenster:\ngeschoss;raumnummer;fenster_nr;verglasungen\nEG;101;F1;4\nEG;101;F2;3\nEG;101;F3;4"}/>
       <button style={{...$.btn,...$.bP,...$.bBl,marginTop:6}} onClick={impRooms}>Importieren</button>
     </div>
     <div style={$.card}><div style={$.cardT}>Räume zusammenführen</div><div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Räume aus einem JSON-Backup eines anderen Geräts in dieses Projekt übernehmen. Bereits vorhandene Räume werden nicht dupliziert.</div><label style={{...$.btn,...$.bO,...$.bS,cursor:"pointer"}}>📂 JSON-Datei auswählen<input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>impJSON(ev.target.result,true);r.readAsText(f);e.target.value="";}}} /></label></div>
