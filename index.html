@@ -332,7 +332,7 @@ function App(){
     });
     const parsed=parseCSV(impTxt);const nR=parsed.filter(r=>r.raumnummer||r.raumid||r.raum_id||r.id||r.room).length;
     setImpTxt("");flash(`${nR} Räume importiert`);};
-  const impJSON=t=>{try{const d=JSON.parse(t);if(!d.id||!d.rooms){flash("Ungültig");return;}if(proj){mut(p=>{const ids=new Set(p.rooms.map(r=>r.id));p.rooms=[...p.rooms,...d.rooms.filter(r=>!ids.has(r.id))];});flash("Zusammengeführt");}else{save(d);flash("OK");}}catch{flash("Fehler");}};
+  const impJSON=(t,merge)=>{try{const d=JSON.parse(t);if(!d.id||!d.rooms){flash("Ungültig");return;}if(merge&&proj){mut(p=>{const ids=new Set(p.rooms.map(r=>r.id));const added=d.rooms.filter(r=>!ids.has(r.id));p.rooms=[...p.rooms,...added];});flash("Zusammengeführt");}else{d.id=uid();d.geaendert=new Date().toISOString();save(d);setProjects(pv=>[...pv,d]);setProj(d);setView("survey");flash(`Projekt «${d.name||"Import"}» importiert`);}}catch{flash("Fehler: ungültige JSON-Datei");}};
 
   const addRoom=()=>{if(!fmR.raumnummer&&!fmR.raumId)return;mut(p=>{p.rooms.push({id:uid(),...fmR,fenster:[],photos:[]});});setFmR({geschoss:fmR.geschoss,raumnummer:"",raumId:""});setModal(null);flash("Raum +");};
   const delRoom=rId=>{mut(p=>{p.rooms=p.rooms.filter(r=>r.id!==rId);});if(room?.id===rId){setRoom(null);setView("survey");}};
@@ -376,6 +376,10 @@ function App(){
   if(view==="home")return <div style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div></div><div style={$.body}>
     {projects.length>0&&projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}
     <button style={{...$.btn,...$.bP,...$.bBl,marginTop:16}} onClick={createProj}>+ Neues Projekt</button>
+    <label style={{...$.btn,...$.bO,...$.bBl,marginTop:8,cursor:"pointer"}}>
+      📂 Projekt importieren (JSON)
+      <input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>impJSON(ev.target.result,false);r.readAsText(f);e.target.value="";}}/>
+    </label>
   </div>{Toast}</div>;
 
   // SETUP
@@ -433,7 +437,7 @@ function App(){
       <textarea style={{...$.inp,minHeight:50,fontFamily:"monospace",fontSize:11}} value={impTxt} onChange={e=>setImpTxt(e.target.value)} placeholder={"geschoss;raumnummer;raumid;verglasungen\nEG;101;R101;6\nOG1;201;R201;4\n\noder mit Fenstern:\ngeschoss;raumnummer;fenster;verglasungen_je_fenster\nEG;101;3;2\nOG1;201;2;2"}/>
       <button style={{...$.btn,...$.bP,...$.bBl,marginTop:6}} onClick={impRooms}>Importieren</button>
     </div>
-    <div style={$.card}><div style={$.cardT}>JSON zusammenführen</div><input type="file" accept=".json" style={{fontSize:12,color:C.tx2}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>impJSON(ev.target.result);r.readAsText(f);}}}/></div>
+    <div style={$.card}><div style={$.cardT}>Räume zusammenführen</div><div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Räume aus einem JSON-Backup eines anderen Geräts in dieses Projekt übernehmen. Bereits vorhandene Räume werden nicht dupliziert.</div><label style={{...$.btn,...$.bO,...$.bS,cursor:"pointer"}}>📂 JSON-Datei auswählen<input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>impJSON(ev.target.result,true);r.readAsText(f);e.target.value="";}}} /></label></div>
     <div style={$.card}><div style={$.cardT}>Legende</div><div style={{display:"flex",gap:12,fontSize:12}}><span><b style={{color:C.sM}}>M</b> Messwert</span><span><b style={{color:C.sH}}>H</b> Herstellerang.</span><span><b style={{color:C.sP}}>P</b> Planungsdaten</span></div></div>
     {p.id&&projects.find(x=>x.id===p.id)&&<div style={{...$.card,borderColor:C.err+"40"}}><button style={{...$.btn,...$.bD,...$.bS}} onClick={()=>{if(confirm("Projekt löschen?"))delProj(p.id);}}>Projekt löschen</button></div>}
   </div>{Toast}</div>;}
