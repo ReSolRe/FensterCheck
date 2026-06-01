@@ -78,15 +78,26 @@ function resolveDef(k,fen,vg,p){
   else if(k==="psiWert"){const rv=sel(vg,"randverbundTyp");if(rv&&rv!=="Unbekannt")cond=T.psi[rv];}
   return (cond===0||cond)&&cond!==""?String(cond):flat;
 }
-// Geometrie-Helfer
-const newGeo=()=>({fluegel:1,oberlicht:false,bruestung:false,stegeH:0,stegeV:0,oeff:{}});
-const cellKey=(region,col,sr,sc)=>region+":"+col+":"+sr+":"+sc;
-function enumerateCells(g){const out=[];const sr=(g.stegeH||0)+1,sc=(g.stegeV||0)+1;
-  for(let c=0;c<(g.fluegel||1);c++)for(let j=0;j<sr;j++)for(let i=0;i<sc;i++)out.push(cellKey("main",c,j,i));
-  if(g.oberlicht)for(let i=0;i<sc;i++)out.push(cellKey("ol",0,0,i));
-  if(g.bruestung)for(let i=0;i<sc;i++)out.push(cellKey("br",0,0,i));
-  return out;}
-function geoSummary(g){if(!g)return "";const p=[(g.fluegel||1)+"-flg"];if(g.oberlicht)p.push("Oberlicht");if(g.bruestung)p.push("Brüstung");if(g.stegeH||g.stegeV)p.push("Stege "+(g.stegeH||0)+"H/"+(g.stegeV||0)+"V");const t=[...new Set(Object.values(g.oeff||{}).filter(Boolean))];if(t.length)p.push("Öffnung: "+t.join("/"));return p.join(", ");}
+// Geometrie-Helfer (Zeilen-Modell: rows[{h,cols}], cells{"r:c":{art,band}})
+const BAND_L={"":"","L":"Links","R":"Rechts","O":"Oben","U":"Unten"};
+const newGeo=()=>({rows:[{h:3,cols:1}],cells:{}});
+function normalizeGeo(g){
+  if(!g)return newGeo();
+  if(Array.isArray(g.rows))return g;
+  if("fluegel" in g){const rows=[];if(g.oberlicht)rows.push({h:1,cols:1});rows.push({h:3,cols:g.fluegel||1});if(g.bruestung)rows.push({h:1,cols:1});
+    const cells={},mi=g.oberlicht?1:0;for(let c=0;c<(g.fluegel||1);c++){const t=g.oeff&&g.oeff["main:"+c+":0:0"];if(t)cells[mi+":"+c]={art:t,band:""};}
+    return {rows,cells};}
+  return newGeo();
+}
+function pruneCells(rows,cells){const out={};Object.keys(cells||{}).forEach(k=>{const[r,c]=k.split(":").map(Number);if(rows[r]&&c<(rows[r].cols||1))out[k]=cells[k];});return out;}
+function shiftCells(cells,delta){const out={};Object.keys(cells||{}).forEach(k=>{const[r,c]=k.split(":").map(Number);out[(r+delta)+":"+c]=cells[k];});return out;}
+function dropRowCells(ri,cells){const out={};Object.keys(cells||{}).forEach(k=>{const[r,c]=k.split(":").map(Number);if(r===ri)return;out[(r>ri?r-1:r)+":"+c]=cells[k];});return out;}
+function geoCellCount(g){g=normalizeGeo(g);return (g.rows||[]).reduce((s,r)=>s+(r.cols||1),0);}
+function geoSummary(g){g=normalizeGeo(g);const rows=g.rows||[];if(!rows.length)return "";
+  const parts=[rows.map(r=>(r.cols||1)+"-flg").join("/")];
+  const ops=[];Object.keys(g.cells||{}).sort().forEach(k=>{const c=g.cells[k];if(c&&c.art)ops.push(c.art+(c.band?"("+c.band+")":""));});
+  if(ops.length)parts.push("Öffnung: "+ops.join(", "));
+  return parts.join("; ");}
 function masseSummary(m){if(!m)return "";const ab={oben:"O",unten:"U",links:"L",rechts:"R",mittelV:"MV",mittelH:"MH"};return RM_POS.map(([k])=>{const v=m[k]||{};const i=v.i||"",a=v.a||"";return (i||a)?ab[k]+" "+(i||"-")+"/"+(a||"-"):"";}).filter(Boolean).join(" · ");}
 
 // Fields that support project-level defaults
@@ -115,7 +126,7 @@ const FIELDS={
   geometrie:{label:"Fenstergeometrie (Skizze)",g:"f",t:"geo"},
   rahmenmasse:{label:"Rahmen-Abmessungen (Detail)",g:"f",t:"masse"},
   verglasungsTyp:{label:"Verglasungsaufbau",g:"v",t:"select",o:GLAZ_TYPES},
-  scheibenaufbau:{label:"Scheibenaufbau [mm]",g:"v",t:"text",ph:"z.B. 4/16/4",src:true},
+  scheibenaufbau:{label:"Scheibenaufbau [mm]",g:"v",t:"text",ph:"z.B. 4/16/4",hint:"Format: Glas/Zwischenraum/Glas in mm – z.B. 4/16/4 oder 4/12/4/12/4",src:true},
   glasDichtung:{label:"Verglasungsdichtung",g:"v",t:"select",o:VG_DICHT},
   lowE:{label:"Low-E Beschichtung",g:"v",t:"select",o:LOWE_OPT},
   gasart:{label:"Gasart",g:"v",t:"select",o:GAS_TYPES},
@@ -168,7 +179,7 @@ function buildExport(p){
   vf.forEach(([k,d])=>{mh.push(d.label);if(d.src&&p.showSrc)mh.push(d.label+" [Quelle]");});
   ff.forEach(([k,d])=>{mh.push(d.label);if(d.src&&p.showSrc)mh.push(d.label+" [Quelle]");});
   if(p.zustandModus&&p.zustandModus!=="Keine")mh.push("Zustand Rahmen");
-  if(geoOn)mh.push("Geometrie","Flügelzahl","Oberlicht","Brüstung","Stege H","Stege V");
+  if(geoOn)mh.push("Geometrie","Zeilen","Felder");
   if(masseOn)mh.push("Rahmenmaße i/a [mm]");
   mh.push("Notizen");
   const mr=[mh];
@@ -180,7 +191,7 @@ function buildExport(p){
       vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src&&p.showSrc)row.push(vg.sources?.[k]||"");});
       ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src&&p.showSrc)row.push(fen.sources?.[k]||"");});
       if(p.zustandModus&&p.zustandModus!=="Keine")row.push(fen.zustandRahmen||"");
-      if(geoOn){const g=fen.geometrie;row.push(geoSummary(g),g?.fluegel||"",g?.oberlicht?"Ja":(g?"Nein":""),g?.bruestung?"Ja":(g?"Nein":""),g?(g.stegeH||0):"",g?(g.stegeV||0):"");}
+      if(geoOn){const g=fen.geometrie;row.push(geoSummary(g),g?normalizeGeo(g).rows.length:"",g?geoCellCount(g):"");}
       if(masseOn)row.push(masseSummary(fen.rahmenmasse));
       row.push(vg.notizen||"");mr.push(row);};
     if(ms.length===0)emit(null,0);else ms.forEach((m,mi)=>emit(m,mi));
@@ -275,6 +286,7 @@ function FldInp({k,def:d,value:v,source:s,onVal,onSrc,defaultVal,showSrc}){
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><label style={$.lbl}>{d.label}{isDefault&&<span style={{color:C.tx3,fontWeight:400}}> (Standard)</span>}</label>{d.src&&showSrc&&<SrcPick value={s} onChange={onSrc}/>}</div>
     {d.t==="select"?<select style={{...$.sel,...$.selS,color:isDefault?C.tx3:C.tx}} value={v||""} onChange={e=>onVal(e.target.value)}><option value="">{defaultVal?`Standard: ${defaultVal}`:"— Auswahl —"}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>
     :<input style={{...$.inp,...$.inpS,color:isDefault?C.tx3:C.tx}} type={d.t==="number"?"number":"text"} step={d.step||undefined} value={v||""} onChange={e=>onVal(e.target.value)} placeholder={defaultVal||d.ph||""}/>}
+    {d.hint&&<div style={{fontSize:10,color:C.tx3,marginTop:2}}>{d.hint}</div>}
   </div>;
 }
 function ZustInp({modus:m,value:v,onChange:ch}){
@@ -305,37 +317,65 @@ function ConfirmDialog({message,onYes,onNo}){
   </div></div>;
 }
 
-// Fenstergeometrie – grafisch, Tippen schaltet Öffnungsart durch
+// DIN-Öffnungssymbol je Feld (Dreieck-Spitze zur Bandseite)
+function openingSymbol(cell,x,y,w,h,key){
+  const a=cell.art||"",band=cell.band||"",col=C.ac,sw=1.2,m=4,els=[];const cx=x+w/2,cy=y+h/2;
+  const L=(x1,y1,x2,y2,i)=><line key={key+"_"+i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={col} strokeWidth={sw} style={{pointerEvents:"none"}}/>;
+  const drehL=()=>[L(x+w-m,y+m,x+m,cy,1),L(x+w-m,y+h-m,x+m,cy,2)];
+  const drehR=()=>[L(x+m,y+m,x+w-m,cy,1),L(x+m,y+h-m,x+w-m,cy,2)];
+  const kipp=()=>[L(x+m,y+m,cx,y+h-m,3),L(x+w-m,y+m,cx,y+h-m,4)];
+  const klapp=()=>[L(x+m,y+h-m,cx,y+m,5),L(x+w-m,y+h-m,cx,y+m,6)];
+  if(a==="Dreh"||a==="Dreh-Kipp")els.push(...(band==="R"?drehR():drehL()));
+  if(a==="Kipp"||a==="Dreh-Kipp")els.push(...kipp());
+  if(a==="Klapp")els.push(...klapp());
+  if(a==="Schiebe")els.push(L(x+m,cy,x+w-m,cy,7),L(x+w-m,cy,x+w-m-5,cy-3,8),L(x+w-m,cy,x+w-m-5,cy+3,9));
+  return els;
+}
+
+// Fenstergeometrie – Zeilen-Modell, Feld antippen → auswählen
 function GeoEditor({geo,onChange}){
-  const g=geo||newGeo();
-  const prune=next=>{const valid=new Set(enumerateCells(next));const oeff={};Object.keys(g.oeff||{}).forEach(k=>{if(valid.has(k)&&g.oeff[k])oeff[k]=g.oeff[k];});return {...next,oeff};};
-  const set=patch=>onChange(prune({...g,...patch}));
-  const CYCLE=["",...FEN_TYPEN];
-  const cycle=key=>{const cur=g.oeff?.[key]||"";const nxt=CYCLE[(CYCLE.indexOf(cur)+1)%CYCLE.length];const oeff={...g.oeff};if(nxt)oeff[key]=nxt;else delete oeff[key];onChange({...g,oeff});};
-  const TINT={"Dreh":C.acBg,"Kipp":C.okBg,"Dreh-Kipp":C.acBg,"Fest":"transparent","Schiebe":C.warnBg,"Klapp":C.warnBg,"Sonstig":C.sf2};
-  const VW=300,PAD=8,GAP=4,MULL=2,BAR=1.2;
-  const OL_H=g.oberlicht?34:0,BR_H=g.bruestung?34:0,MAIN_H=Math.max(110,((g.stegeH||0)+1)*34);
-  const VH=PAD*2+OL_H+(OL_H?GAP:0)+MAIN_H+(BR_H?GAP:0)+BR_H;
-  const innerW=VW-2*PAD,x0=PAD;
-  let yy=PAD;const olY=yy;if(OL_H)yy+=OL_H+GAP;const mainY=yy;yy+=MAIN_H;if(BR_H)yy+=GAP;const brY=yy;
-  const fl=g.fluegel||1,sc=(g.stegeV||0)+1,sr=(g.stegeH||0)+1,colW=(innerW-(fl-1)*MULL)/fl;
-  const Cell=(key,x,y,w,h)=>{const t=g.oeff?.[key]||"";return <g key={key} onClick={()=>cycle(key)} style={{cursor:"pointer"}}>
-    <rect x={x} y={y} width={w} height={h} fill={t?(TINT[t]||C.acBg):C.sf2} stroke={C.bd} strokeWidth={BAR}/>
-    <text x={x+w/2} y={y+h/2} fill={t?C.ac:C.tx3} fontSize={Math.min(13,w*0.55)} textAnchor="middle" dominantBaseline="central" style={{pointerEvents:"none",fontWeight:700}}>{t?FEN_AB[t]:"+"}</text></g>;};
-  const cells=[];
-  for(let c=0;c<fl;c++){const cx=x0+c*(colW+MULL),cw=colW/sc,ch=MAIN_H/sr;for(let j=0;j<sr;j++)for(let i=0;i<sc;i++)cells.push(Cell(cellKey("main",c,j,i),cx+i*cw,mainY+j*ch,cw,ch));}
-  if(OL_H){const cw=innerW/sc;for(let i=0;i<sc;i++)cells.push(Cell(cellKey("ol",0,0,i),x0+i*cw,olY,cw,OL_H));}
-  if(BR_H){const cw=innerW/sc;for(let i=0;i<sc;i++)cells.push(Cell(cellKey("br",0,0,i),x0+i*cw,brY,cw,BR_H));}
-  const seg=(val,arr,on)=><div style={{display:"flex",gap:4,flex:1}}>{arr.map(n=><button key={n} style={{...$.btn,...$.bS,flex:1,padding:"6px 0",...(val===n?$.bP:$.bO)}} onClick={()=>on(n)}>{n}</button>)}</div>;
+  const g=normalizeGeo(geo);
+  const[sel,setSel]=useState(null);
+  const rows=g.rows;
+  const setCols=(ri,cols)=>{const nr=rows.map((r,i)=>i===ri?{...r,cols}:r);onChange({...g,rows:nr,cells:pruneCells(nr,g.cells)});};
+  const setH=(ri,dh)=>onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,h:Math.max(1,(r.h||1)+dh)}:r)});
+  const addRow=top=>onChange({...g,rows:top?[{h:1,cols:1},...rows]:[...rows,{h:1,cols:1}],cells:top?shiftCells(g.cells,1):g.cells});
+  const delRow=ri=>{if(rows.length<=1)return;onChange({...g,rows:rows.filter((_,i)=>i!==ri),cells:dropRowCells(ri,g.cells)});setSel(null);};
+  const setCell=(key,patch)=>onChange({...g,cells:{...g.cells,[key]:{art:"",band:"",...(g.cells[key]||{}),...patch}}});
+  const VW=300,PAD=8,MULL=2,BAR=1.4;
+  const totalH=rows.reduce((s,r)=>s+(r.h||1),0)||1,AREA_H=Math.max(120,rows.length*46);
+  const innerW=VW-2*PAD,x0=PAD,VH=AREA_H+2*PAD;
+  const rects=[],syms=[];let yy=PAD;
+  rows.forEach((row,ri)=>{const rh=(row.h||1)/totalH*AREA_H,cols=row.cols||1,cw=(innerW-(cols-1)*MULL)/cols;
+    for(let c=0;c<cols;c++){const x=x0+c*(cw+MULL),y=yy,key=ri+":"+c,cell=g.cells[key]||{},isSel=sel===key;
+      rects.push(<rect key={"r"+key} x={x} y={y} width={cw} height={rh} fill={cell.art?C.acBg:C.sf2} stroke={isSel?C.ac:C.bd} strokeWidth={isSel?2.5:BAR} onClick={()=>setSel(key)} style={{cursor:"pointer"}}/>);
+      syms.push(...openingSymbol(cell,x,y,cw,rh,key));
+      if(cell.art)syms.push(<text key={"t"+key} x={x+3} y={y+11} fill={C.tx2} fontSize="9" style={{pointerEvents:"none"}}>{FEN_AB[cell.art]||""}{cell.band?"·"+cell.band:""}</text>);
+    }yy+=rh;});
+  const seg=(val,arr,on)=><div style={{display:"flex",gap:2}}>{arr.map(n=><button key={n} style={{...$.btn,...$.bS,padding:"3px 7px",fontSize:11,...(val===n?$.bP:$.bO)}} onClick={()=>on(n)}>{n}</button>)}</div>;
+  const sb={...$.btn,...$.bO,padding:"2px 8px",fontSize:13,minWidth:26};
   return <div>
-    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}><span style={{...$.lbl,marginBottom:0,width:62}}>Flügel</span>{seg(fl,[1,2,3,4],n=>set({fluegel:n}))}</div>
-    <Tog label="Oberlicht" value={!!g.oberlicht} onChange={v=>set({oberlicht:v})}/>
-    <Tog label="Brüstungsverglasung" value={!!g.bruestung} onChange={v=>set({bruestung:v})}/>
-    <div style={{display:"flex",alignItems:"center",gap:6,margin:"6px 0"}}><span style={{...$.lbl,marginBottom:0,width:62}}>Stege ↕ horiz.</span>{seg(g.stegeH||0,[0,1,2,3],n=>set({stegeH:n}))}</div>
-    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}><span style={{...$.lbl,marginBottom:0,width:62}}>Stege ↔ vert.</span>{seg(g.stegeV||0,[0,1,2,3],n=>set({stegeV:n}))}</div>
-    <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",display:"block",touchAction:"manipulation",marginTop:6,marginBottom:6}}>{cells}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={4} rx={4}/></svg>
+    <div style={{...$.lbl,marginBottom:4}}>Zeilen (oben → unten)</div>
+    {rows.map((row,ri)=><div key={ri} style={{display:"flex",alignItems:"center",gap:4,marginBottom:4,flexWrap:"wrap"}}>
+      <span style={{fontSize:11,color:C.tx2,width:22}}>Z{ri+1}</span>
+      <span style={{fontSize:10,color:C.tx3}}>Flg</span>{seg(row.cols||1,[1,2,3,4],n=>setCols(ri,n))}
+      <span style={{fontSize:10,color:C.tx3,marginLeft:4}}>Höhe</span>
+      <button style={sb} onClick={()=>setH(ri,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{row.h||1}</span><button style={sb} onClick={()=>setH(ri,1)}>+</button>
+      {rows.length>1&&<button style={{...sb,color:C.err,borderColor:C.err+"60"}} onClick={()=>delRow(ri)}>🗑</button>}
+    </div>)}
+    <div style={{display:"flex",gap:6,marginTop:2,marginBottom:6}}>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(true)}>↑ Zeile oben</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(false)}>↓ Zeile unten</button>
+    </div>
+    <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",display:"block",touchAction:"manipulation",marginBottom:6}}>{rects}{syms}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={4} rx={4}/></svg>
+    {sel!=null?(()=>{const pr=sel.split(":"),cell=g.cells[sel]||{},showBand=cell.art==="Dreh"||cell.art==="Dreh-Kipp";
+      return <div style={{padding:8,background:C.sf2,borderRadius:8,marginBottom:6}}>
+        <div style={{fontSize:11,color:C.tx2,marginBottom:5}}>Feld Z{+pr[0]+1} · Spalte {+pr[1]+1}</div>
+        <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:showBand?6:0}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...$.btn,...$.bS,padding:"4px 7px",fontSize:11,...((cell.art||"")===t?$.bP:$.bO)}} onClick={()=>setCell(sel,{art:t})}>{t||"leer"}</button>)}</div>
+        {showBand&&<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{[["L","Links"],["R","Rechts"]].map(([v,l])=><button key={v} style={{...$.btn,...$.bS,padding:"4px 9px",...(cell.band===v?$.bP:$.bO)}} onClick={()=>setCell(sel,{band:v})}>{l}</button>)}</div>}
+      </div>;})()
+    :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Feld antippen → Öffnungsart &amp; Bandseite wählen</div>}
     <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:10,color:C.tx2}}>{FEN_TYPEN.map(t=><span key={t}><b style={{color:C.tx}}>{FEN_AB[t]}</b> {t}</span>)}</div>
-    <div style={{fontSize:10,color:C.tx3,marginTop:3}}>Feld antippen → Öffnungsart wechselt (mehrfach = nächste, zuletzt leer)</div>
   </div>;
 }
 
@@ -415,7 +455,7 @@ function App(){
 
   const hasData=p=>{let n=0;(p?.rooms||[]).forEach(r=>(r.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{n+=(v.messungen||[]).length;})));return n>0;};
 
-  const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"verglasung",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],defaults:{},rooms:[]};setProj(p);setView("setup");};
+  const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"fenster",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],defaults:{},rooms:[]};setProj(p);setView("setup");};
   const delProj=async id=>{await dbDel(id);setProjects(p=>p.filter(x=>x.id!==id));if(proj?.id===id){setProj(null);setView("home");}};
   const impRooms=()=>{if(!impTxt.trim())return;const d=parseCSV(impTxt);if(!d.length){flash("Keine Daten");return;}
     const hasPerWindow=d.some(r=>r.fenster_nr||r.fensternr||r.window_nr);
@@ -581,7 +621,7 @@ function App(){
       </div>
     </div>
     <div style={$.card}><div style={$.cardT}>Optionen</div><Tog label="Datenquelle erfassen (M/H/P)" value={!!p.showSrc} onChange={v=>setProj({...p,showSrc:v})}/><div style={{fontSize:11,color:C.tx2,marginTop:2}}>Blendet die Quelle-Auswahl (Messwert/Hersteller/Planung) je Wert ein.</div></div>
-    <div style={$.card}><div style={$.cardT}>Modus</div>{hasData(p)&&<div style={{fontSize:11,color:C.warn,marginBottom:6}}>⚠ Modus kann nicht geändert werden, da bereits Messdaten vorhanden sind.</div>}<div style={{display:"flex",gap:8}}>{[["verglasung","◻","Nur Verglasungen"],["fenster","⊞","Fenster + Verglasung"]].map(([m,i,t])=><div key={m} onClick={()=>trySetModus(m)} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center",opacity:hasData(p)&&p.modus!==m?0.4:1}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
+    <div style={$.card}><div style={$.cardT}>Modus</div>{hasData(p)&&<div style={{fontSize:11,color:C.warn,marginBottom:6}}>⚠ Modus kann nicht geändert werden, da bereits Messdaten vorhanden sind.</div>}<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Standard: „Fenster + Verglasung" (mit Geometrie & Rahmen). „Nur Verglasungen" nur für reine Glaserfassung ohne Fensterdaten.</div><div style={{display:"flex",gap:8}}>{[["fenster","⊞","Fenster + Verglasung"],["verglasung","◻","Nur Verglasungen"]].map(([m,i,t])=><div key={m} onClick={()=>trySetModus(m)} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center",opacity:hasData(p)&&p.modus!==m?0.4:1}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Zustand Rahmen</div><div style={{display:"flex",gap:4}}>{["Keine","Einfach","Freitext","Detailliert"].map(z=><div key={z} onClick={()=>setProj({...p,zustandModus:z})} style={{flex:1,padding:"7px 2px",borderRadius:6,border:`1px solid ${(p.zustandModus||"Keine")===z?C.ac:C.bd}`,background:(p.zustandModus||"Keine")===z?C.acBg:"transparent",cursor:"pointer",textAlign:"center",fontSize:11,fontWeight:600}}>{z}</div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Profil</div><div style={{display:"flex",gap:6,marginBottom:10}}>{Object.entries(PRESETS).map(([k,pr])=><button key={k} style={{...$.btn,...$.bO,...$.bS,flex:1,flexDirection:"column",padding:"8px 4px",height:"auto"}} onClick={()=>setProj({...p,activeFields:[...pr.fields]})}><span style={{fontWeight:700,fontSize:12}}>{pr.name}</span><span style={{fontSize:9,color:C.tx2}}>{pr.desc}</span></button>)}</div>
       <div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4}}>FENSTER</div>{Object.entries(FIELDS).filter(([,d])=>d.g==="f").map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}
