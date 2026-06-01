@@ -337,8 +337,9 @@ function GeoEditor({geo,onChange}){
   const g=normalizeGeo(geo);
   const[sel,setSel]=useState(null);
   const rows=g.rows;
-  const setCols=(ri,cols)=>{const nr=rows.map((r,i)=>i===ri?{...r,cols}:r);onChange({...g,rows:nr,cells:pruneCells(nr,g.cells)});};
+  const setCols=(ri,cols)=>{const nr=rows.map((r,i)=>i===ri?{...r,cols,w:Array.from({length:cols},(_,j)=>(r.w&&r.w[j])||1)}:r);onChange({...g,rows:nr,cells:pruneCells(nr,g.cells)});};
   const setH=(ri,dh)=>onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,h:Math.max(1,(r.h||1)+dh)}:r)});
+  const setW=(ri,ci,dw)=>{const row=rows[ri],cols=row.cols||1,w=Array.from({length:cols},(_,j)=>(row.w&&row.w[j])||1);w[ci]=Math.max(1,(w[ci]||1)+dw);onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,w}:r)});};
   const addRow=top=>onChange({...g,rows:top?[{h:1,cols:1},...rows]:[...rows,{h:1,cols:1}],cells:top?shiftCells(g.cells,1):g.cells});
   const delRow=ri=>{if(rows.length<=1)return;onChange({...g,rows:rows.filter((_,i)=>i!==ri),cells:dropRowCells(ri,g.cells)});setSel(null);};
   const setCell=(key,patch)=>onChange({...g,cells:{...g.cells,[key]:{art:"",band:"",...(g.cells[key]||{}),...patch}}});
@@ -346,12 +347,13 @@ function GeoEditor({geo,onChange}){
   const totalH=rows.reduce((s,r)=>s+(r.h||1),0)||1,AREA_H=Math.max(120,rows.length*46);
   const innerW=VW-2*PAD,x0=PAD,VH=AREA_H+2*PAD;
   const rects=[],syms=[];let yy=PAD;
-  rows.forEach((row,ri)=>{const rh=(row.h||1)/totalH*AREA_H,cols=row.cols||1,cw=(innerW-(cols-1)*MULL)/cols;
-    for(let c=0;c<cols;c++){const x=x0+c*(cw+MULL),y=yy,key=ri+":"+c,cell=g.cells[key]||{},isSel=sel===key;
+  rows.forEach((row,ri)=>{const rh=(row.h||1)/totalH*AREA_H,cols=row.cols||1,ws=(row.w&&row.w.length===cols)?row.w:Array(cols).fill(1),wsum=ws.reduce((a,b)=>a+b,0)||cols,avail=innerW-(cols-1)*MULL;let cx=x0;
+    for(let c=0;c<cols;c++){const cw=ws[c]/wsum*avail,x=cx,y=yy,key=ri+":"+c,cell=g.cells[key]||{},isSel=sel===key;
       rects.push(<rect key={"r"+key} x={x} y={y} width={cw} height={rh} fill={cell.art?C.acBg:C.sf2} stroke={isSel?C.ac:C.bd} strokeWidth={isSel?2.5:BAR} onClick={()=>setSel(key)} style={{cursor:"pointer"}}/>);
       syms.push(...openingSymbol(cell,x,y,cw,rh,key));
       if(cell.art)syms.push(<text key={"t"+key} x={x+3} y={y+11} fill={C.tx2} fontSize="9" style={{pointerEvents:"none"}}>{FEN_AB[cell.art]||""}{cell.band?"·"+cell.band:""}</text>);
-    }yy+=rh;});
+      cx+=cw+MULL;}
+    yy+=rh;});
   const seg=(val,arr,on)=><div style={{display:"flex",gap:2}}>{arr.map(n=><button key={n} style={{...$.btn,...$.bS,padding:"3px 7px",fontSize:11,...(val===n?$.bP:$.bO)}} onClick={()=>on(n)}>{n}</button>)}</div>;
   const sb={...$.btn,...$.bO,padding:"2px 8px",fontSize:13,minWidth:26};
   return <div>
@@ -368,11 +370,12 @@ function GeoEditor({geo,onChange}){
       <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(false)}>↓ Zeile unten</button>
     </div>
     <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",display:"block",touchAction:"manipulation",marginBottom:6}}>{rects}{syms}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={4} rx={4}/></svg>
-    {sel!=null?(()=>{const pr=sel.split(":"),cell=g.cells[sel]||{},showBand=cell.art==="Dreh"||cell.art==="Dreh-Kipp";
+    {sel!=null?(()=>{const pr=sel.split(":"),ri=+pr[0],ci=+pr[1],row=rows[ri]||{cols:1},cols=row.cols||1,cell=g.cells[sel]||{},showBand=cell.art==="Dreh"||cell.art==="Dreh-Kipp",curW=(row.w&&row.w[ci])||1;
       return <div style={{padding:8,background:C.sf2,borderRadius:8,marginBottom:6}}>
-        <div style={{fontSize:11,color:C.tx2,marginBottom:5}}>Feld Z{+pr[0]+1} · Spalte {+pr[1]+1}</div>
-        <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:showBand?6:0}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...$.btn,...$.bS,padding:"4px 7px",fontSize:11,...((cell.art||"")===t?$.bP:$.bO)}} onClick={()=>setCell(sel,{art:t})}>{t||"leer"}</button>)}</div>
-        {showBand&&<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{[["L","Links"],["R","Rechts"]].map(([v,l])=><button key={v} style={{...$.btn,...$.bS,padding:"4px 9px",...(cell.band===v?$.bP:$.bO)}} onClick={()=>setCell(sel,{band:v})}>{l}</button>)}</div>}
+        <div style={{fontSize:11,color:C.tx2,marginBottom:5}}>Feld Z{ri+1} · Spalte {ci+1}</div>
+        <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:(showBand||cols>1)?6:0}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...$.btn,...$.bS,padding:"4px 7px",fontSize:11,...((cell.art||"")===t?$.bP:$.bO)}} onClick={()=>setCell(sel,{art:t})}>{t||"leer"}</button>)}</div>
+        {showBand&&<div style={{display:"flex",gap:4,alignItems:"center",marginBottom:cols>1?6:0}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{[["L","Links"],["R","Rechts"]].map(([v,l])=><button key={v} style={{...$.btn,...$.bS,padding:"4px 9px",...(cell.band===v?$.bP:$.bO)}} onClick={()=>setCell(sel,{band:v})}>{l}</button>)}</div>}
+        {cols>1&&<div style={{display:"flex",gap:6,alignItems:"center"}}><span style={{fontSize:11,color:C.tx2}}>Spaltenbreite:</span><button style={sb} onClick={()=>setW(ri,ci,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{curW}</span><button style={sb} onClick={()=>setW(ri,ci,1)}>+</button></div>}
       </div>;})()
     :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Feld antippen → Öffnungsart &amp; Bandseite wählen</div>}
     <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:10,color:C.tx2}}>{FEN_TYPEN.map(t=><span key={t}><b style={{color:C.tx}}>{FEN_AB[t]}</b> {t}</span>)}</div>
