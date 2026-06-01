@@ -37,6 +37,7 @@ const LOWE_OPT=["Ja","Nein","Unbekannt"];
 const GAS_TYPES=["Luft","Argon","Krypton","Unbekannt"];
 const RV_TYPES=["Aluminium","Edelstahl (Warm Edge)","Kunststoff (TGI/TPS)","Unbekannt"];
 const RV_ZUST=["Intakt","Undicht","Beschlagen","Defekt"];
+const VG_DICHT=["Nassverglasung (Silikon)","Trockenverglasung (Gummidichtung)","Unbekannt"];
 const DI_ANZ=["0","1","2","3"];
 const DI_MAT=["EPDM","Silikon","TPE","PVC","Unbekannt"];
 const DI_ZUST=["Intakt","Spröde","Verformt","Fehlend"];
@@ -46,12 +47,53 @@ const ZU_SIMPLE=["Gut","Mittel","Schlecht"];
 const ZU_DET=["Rahmen: Gut","Rahmen: Beschädigt","Rahmen: Verwittert","Dichtung: Intakt","Dichtung: Spröde","Dichtung: Fehlend","Glas: Intakt","Glas: Beschlagen","Glas: Gesprungen","Beschlag: Funktionsfähig","Beschlag: Schwergängig","Beschlag: Defekt"];
 const DSRC=["M","H","P"];
 const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
+const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
+const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
+
+// Editierbare thermische Standardwerte (global + Projekt-Override)
+const UF_EPOCHS=["<1980","1980-1994","1995-2009",">=2010"];
+const DEFAULT_TABLES={
+  uf:{"Holz":{"<1980":2.0,"1980-1994":1.8,"1995-2009":1.6,">=2010":1.3},
+      "Holz-Metall":{"<1980":2.2,"1980-1994":2.0,"1995-2009":1.7,">=2010":1.3},
+      "Kunststoff":{"<1980":2.2,"1980-1994":2.0,"1995-2009":1.5,">=2010":1.2},
+      "Kunststoff-Metall":{"<1980":2.4,"1980-1994":2.1,"1995-2009":1.6,">=2010":1.2},
+      "Metall":{"<1980":5.0,"1980-1994":4.0,"1995-2009":2.6,">=2010":1.8},
+      "Unbekannt":{"<1980":"","1980-1994":"","1995-2009":"",">=2010":""}},
+  ug:{"2-fach IV":3.0,"2-fach WSV":1.3,"3-fach WSV":0.7,"Unbekannt":""},
+  g:{"2-fach IV":0.76,"2-fach WSV":0.62,"3-fach WSV":0.50,"Unbekannt":""},
+  psi:{"Aluminium":0.08,"Edelstahl (Warm Edge)":0.05,"Kunststoff (TGI/TPS)":0.04,"Unbekannt":""}
+};
+const TD_KEY="fc_thermalDefaults_v1";
+let _gtd=null;
+function loadGlobalTD(){if(_gtd)return _gtd;try{const s=localStorage.getItem(TD_KEY);_gtd=s?JSON.parse(s):JSON.parse(JSON.stringify(DEFAULT_TABLES));}catch(e){_gtd=JSON.parse(JSON.stringify(DEFAULT_TABLES));}return _gtd;}
+function saveGlobalTD(t){_gtd=t;try{localStorage.setItem(TD_KEY,JSON.stringify(t));}catch(e){}}
+function effTD(p){return (p&&p.thermalDefaults)||loadGlobalTD()||DEFAULT_TABLES;}
+const ufEpoch=y=>{const n=parseInt(y,10);if(!n)return null;return n<1980?"<1980":n<1995?"1980-1994":n<2010?"1995-2009":">=2010";};
+function resolveDef(k,fen,vg,p){
+  const T=effTD(p),flat=(p&&p.defaults&&p.defaults[k])||"";
+  const sel=(rec,key)=>(rec&&rec.data&&rec.data[key])||(p&&p.defaults&&p.defaults[key])||"";
+  let cond="";
+  if(k==="ufWert"){const m=sel(fen,"rahmenMaterial"),ep=ufEpoch(sel(fen,"baujahr"));if(m&&m!=="Unbekannt"&&ep&&T.uf[m])cond=T.uf[m][ep];}
+  else if(k==="ugWert"||k==="gWert"){const gt=sel(vg,"verglasungsTyp");if(gt&&gt!=="Unbekannt")cond=(k==="ugWert"?T.ug:T.g)[gt];}
+  else if(k==="psiWert"){const rv=sel(vg,"randverbundTyp");if(rv&&rv!=="Unbekannt")cond=T.psi[rv];}
+  return (cond===0||cond)&&cond!==""?String(cond):flat;
+}
+// Geometrie-Helfer
+const newGeo=()=>({fluegel:1,oberlicht:false,bruestung:false,stegeH:0,stegeV:0,oeff:{}});
+const cellKey=(region,col,sr,sc)=>region+":"+col+":"+sr+":"+sc;
+function enumerateCells(g){const out=[];const sr=(g.stegeH||0)+1,sc=(g.stegeV||0)+1;
+  for(let c=0;c<(g.fluegel||1);c++)for(let j=0;j<sr;j++)for(let i=0;i<sc;i++)out.push(cellKey("main",c,j,i));
+  if(g.oberlicht)for(let i=0;i<sc;i++)out.push(cellKey("ol",0,0,i));
+  if(g.bruestung)for(let i=0;i<sc;i++)out.push(cellKey("br",0,0,i));
+  return out;}
+function geoSummary(g){if(!g)return "";const p=[(g.fluegel||1)+"-flg"];if(g.oberlicht)p.push("Oberlicht");if(g.bruestung)p.push("Brüstung");if(g.stegeH||g.stegeV)p.push("Stege "+(g.stegeH||0)+"H/"+(g.stegeV||0)+"V");const t=[...new Set(Object.values(g.oeff||{}).filter(Boolean))];if(t.length)p.push("Öffnung: "+t.join("/"));return p.join(", ");}
+function masseSummary(m){if(!m)return "";const ab={oben:"O",unten:"U",links:"L",rechts:"R",mittelV:"MV",mittelH:"MH"};return RM_POS.map(([k])=>{const v=m[k]||{};const i=v.i||"",a=v.a||"";return (i||a)?ab[k]+" "+(i||"-")+"/"+(a||"-"):"";}).filter(Boolean).join(" · ");}
 
 // Fields that support project-level defaults
 const DEFAULTABLE_FIELDS = [
-  "verglasungsTyp","scheibenaufbau","lowE","gasart","randverbundTyp",
+  "verglasungsTyp","scheibenaufbau","glasDichtung","lowE","gasart","randverbundTyp",
   "ugWert","gWert","rahmenMaterial","rahmenProfiltiefe","baujahr",
-  "ufWert","dichtungAnzahl","dichtungMaterial"
+  "ufWert","psiWert","dichtungAnzahl","dichtungMaterial"
 ];
 
 const FIELDS={
@@ -70,22 +112,27 @@ const FIELDS={
   beschlagTyp:{label:"Beschlagtyp",g:"f",t:"select",o:BE_TYP},
   beschlagZustand:{label:"Zustand Beschläge",g:"f",t:"select",o:BE_ZUST},
   zustandRahmen:{label:"Zustand Rahmen",g:"f",t:"zustand"},
+  geometrie:{label:"Fenstergeometrie (Skizze)",g:"f",t:"geo"},
+  rahmenmasse:{label:"Rahmen-Abmessungen (Detail)",g:"f",t:"masse"},
   verglasungsTyp:{label:"Verglasungsaufbau",g:"v",t:"select",o:GLAZ_TYPES},
   scheibenaufbau:{label:"Scheibenaufbau [mm]",g:"v",t:"text",ph:"z.B. 4/16/4",src:true},
+  glasDichtung:{label:"Verglasungsdichtung",g:"v",t:"select",o:VG_DICHT},
   lowE:{label:"Low-E Beschichtung",g:"v",t:"select",o:LOWE_OPT},
   gasart:{label:"Gasart",g:"v",t:"select",o:GAS_TYPES},
   randverbundTyp:{label:"Randverbund-Typ",g:"v",t:"select",o:RV_TYPES},
   randverbundZustand:{label:"Zustand Randverbund",g:"v",t:"select",o:RV_ZUST},
+  psiWert:{label:"ψ-Wert Randverbund [W/mK]",g:"v",t:"number",step:"0.001",src:true},
   ugWert:{label:"Ug-Wert [W/m²K]",g:"v",t:"number",step:"0.01",src:true},
   gWert:{label:"g-Wert",g:"v",t:"number",step:"0.01",src:true},
   glasBreite:{label:"Glasbreite [mm]",g:"v",t:"number",src:true},
   glasHoehe:{label:"Glashöhe [mm]",g:"v",t:"number",src:true},
+  glasBaujahr:{label:"Baujahr Verglasung",g:"v",t:"number",src:true},
   stempel:{label:"Stempel/Kennzeichnung",g:"v",t:"text",ph:"Herstellerangaben"},
 };
 
 const PRESETS={
   schnell:{name:"Schnell",desc:"Gasfüllgrad + Typ",fields:["verglasungsTyp"]},
-  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterTyp","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau"]},
+  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterTyp","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau","glasDichtung","psiWert"]},
   voll:{name:"Voll",desc:"Alle Felder",fields:Object.keys(FIELDS)},
 };
 
@@ -99,8 +146,9 @@ function parseCSV(text){const ls=text.trim().split(/\r?\n/);if(ls.length<2)retur
 // Export
 function buildExport(p){
   const af=new Set(p.activeFields||[]);
-  const ff=Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&af.has(k));
+  const ff=Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&d.t!=="geo"&&d.t!=="masse"&&af.has(k));
   const vf=Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&af.has(k));
+  const geoOn=af.has("geometrie"),masseOn=af.has("rahmenmasse");
   const ov=[];
   ov.push(["FensterCheck – Projektexport"],[],["Projektname",p.name||""],["Gebäude",p.gebaeude||""],["Adresse",p.adresse||""],
     ["Erstellt",p.erstellt?new Date(p.erstellt).toLocaleDateString("de-CH"):""],
@@ -117,6 +165,8 @@ function buildExport(p){
   vf.forEach(([k,d])=>{mh.push(d.label);if(d.src)mh.push(d.label+" [Quelle]");});
   ff.forEach(([k,d])=>{mh.push(d.label);if(d.src)mh.push(d.label+" [Quelle]");});
   if(p.zustandModus&&p.zustandModus!=="Keine")mh.push("Zustand Rahmen");
+  if(geoOn)mh.push("Geometrie","Flügelzahl","Oberlicht","Brüstung","Stege H","Stege V");
+  if(masseOn)mh.push("Rahmenmaße i/a [mm]");
   mh.push("Notizen");
   const mr=[mh];
   (p.rooms||[]).forEach(room=>{(room.fenster||[]).forEach(fen=>{(fen.verglasungen||[]).forEach(vg=>{
@@ -124,9 +174,11 @@ function buildExport(p){
     const emit=(m,mi)=>{const z=m?new Date(m.zeit):null;
       const row=[room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||"",
         m?m.wert:"",m?mi+1:"",m?m.zeit:"",z?z.toLocaleDateString("de-CH"):"",z?z.toLocaleTimeString("de-CH"):""];
-      vf.forEach(([k,d])=>{row.push(vg.data?.[k]||p.defaults?.[k]||"");if(d.src)row.push(vg.sources?.[k]||"");});
-      ff.forEach(([k,d])=>{row.push(fen.data?.[k]||p.defaults?.[k]||"");if(d.src)row.push(fen.sources?.[k]||"");});
+      vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src)row.push(vg.sources?.[k]||"");});
+      ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src)row.push(fen.sources?.[k]||"");});
       if(p.zustandModus&&p.zustandModus!=="Keine")row.push(fen.zustandRahmen||"");
+      if(geoOn){const g=fen.geometrie;row.push(geoSummary(g),g?.fluegel||"",g?.oberlicht?"Ja":(g?"Nein":""),g?.bruestung?"Ja":(g?"Nein":""),g?(g.stegeH||0):"",g?(g.stegeV||0):"");}
+      if(masseOn)row.push(masseSummary(fen.rahmenmasse));
       row.push(vg.notizen||"");mr.push(row);};
     if(ms.length===0)emit(null,0);else ms.forEach((m,mi)=>emit(m,mi));
   });});});
@@ -249,6 +301,75 @@ function ConfirmDialog({message,onYes,onNo}){
   </div></div>;
 }
 
+// Fenstergeometrie – grafisch, Tippen schaltet Öffnungsart durch
+function GeoEditor({geo,onChange}){
+  const g=geo||newGeo();
+  const prune=next=>{const valid=new Set(enumerateCells(next));const oeff={};Object.keys(g.oeff||{}).forEach(k=>{if(valid.has(k)&&g.oeff[k])oeff[k]=g.oeff[k];});return {...next,oeff};};
+  const set=patch=>onChange(prune({...g,...patch}));
+  const CYCLE=["",...FEN_TYPEN];
+  const cycle=key=>{const cur=g.oeff?.[key]||"";const nxt=CYCLE[(CYCLE.indexOf(cur)+1)%CYCLE.length];const oeff={...g.oeff};if(nxt)oeff[key]=nxt;else delete oeff[key];onChange({...g,oeff});};
+  const TINT={"Dreh":C.acBg,"Kipp":C.okBg,"Dreh-Kipp":C.acBg,"Fest":"transparent","Schiebe":C.warnBg,"Klapp":C.warnBg,"Sonstig":C.sf2};
+  const VW=300,PAD=8,GAP=4,MULL=2,BAR=1.2;
+  const OL_H=g.oberlicht?34:0,BR_H=g.bruestung?34:0,MAIN_H=Math.max(110,((g.stegeH||0)+1)*34);
+  const VH=PAD*2+OL_H+(OL_H?GAP:0)+MAIN_H+(BR_H?GAP:0)+BR_H;
+  const innerW=VW-2*PAD,x0=PAD;
+  let yy=PAD;const olY=yy;if(OL_H)yy+=OL_H+GAP;const mainY=yy;yy+=MAIN_H;if(BR_H)yy+=GAP;const brY=yy;
+  const fl=g.fluegel||1,sc=(g.stegeV||0)+1,sr=(g.stegeH||0)+1,colW=(innerW-(fl-1)*MULL)/fl;
+  const Cell=(key,x,y,w,h)=>{const t=g.oeff?.[key]||"";return <g key={key} onClick={()=>cycle(key)} style={{cursor:"pointer"}}>
+    <rect x={x} y={y} width={w} height={h} fill={t?(TINT[t]||C.acBg):C.sf2} stroke={C.bd} strokeWidth={BAR}/>
+    <text x={x+w/2} y={y+h/2} fill={t?C.ac:C.tx3} fontSize={Math.min(13,w*0.55)} textAnchor="middle" dominantBaseline="central" style={{pointerEvents:"none",fontWeight:700}}>{t?FEN_AB[t]:"+"}</text></g>;};
+  const cells=[];
+  for(let c=0;c<fl;c++){const cx=x0+c*(colW+MULL),cw=colW/sc,ch=MAIN_H/sr;for(let j=0;j<sr;j++)for(let i=0;i<sc;i++)cells.push(Cell(cellKey("main",c,j,i),cx+i*cw,mainY+j*ch,cw,ch));}
+  if(OL_H){const cw=innerW/sc;for(let i=0;i<sc;i++)cells.push(Cell(cellKey("ol",0,0,i),x0+i*cw,olY,cw,OL_H));}
+  if(BR_H){const cw=innerW/sc;for(let i=0;i<sc;i++)cells.push(Cell(cellKey("br",0,0,i),x0+i*cw,brY,cw,BR_H));}
+  const seg=(val,arr,on)=><div style={{display:"flex",gap:4,flex:1}}>{arr.map(n=><button key={n} style={{...$.btn,...$.bS,flex:1,padding:"6px 0",...(val===n?$.bP:$.bO)}} onClick={()=>on(n)}>{n}</button>)}</div>;
+  return <div>
+    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}><span style={{...$.lbl,marginBottom:0,width:62}}>Flügel</span>{seg(fl,[1,2,3,4],n=>set({fluegel:n}))}</div>
+    <Tog label="Oberlicht" value={!!g.oberlicht} onChange={v=>set({oberlicht:v})}/>
+    <Tog label="Brüstungsverglasung" value={!!g.bruestung} onChange={v=>set({bruestung:v})}/>
+    <div style={{display:"flex",alignItems:"center",gap:6,margin:"6px 0"}}><span style={{...$.lbl,marginBottom:0,width:62}}>Stege ↕ horiz.</span>{seg(g.stegeH||0,[0,1,2,3],n=>set({stegeH:n}))}</div>
+    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}><span style={{...$.lbl,marginBottom:0,width:62}}>Stege ↔ vert.</span>{seg(g.stegeV||0,[0,1,2,3],n=>set({stegeV:n}))}</div>
+    <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",display:"block",touchAction:"manipulation",marginTop:6,marginBottom:6}}>{cells}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={4} rx={4}/></svg>
+    <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:10,color:C.tx2}}>{FEN_TYPEN.map(t=><span key={t}><b style={{color:C.tx}}>{FEN_AB[t]}</b> {t}</span>)}</div>
+    <div style={{fontSize:10,color:C.tx3,marginTop:3}}>Feld antippen → Öffnungsart wechselt (mehrfach = nächste, zuletzt leer)</div>
+  </div>;
+}
+
+// Detaillierte Rahmen-Abmessungen (je Seite + Mittelstege, innen/aussen)
+function RahmenMasse({val,onChange}){
+  const m=val||{};
+  const set=(pos,ia,v)=>{const nm=JSON.parse(JSON.stringify(m));if(!nm[pos])nm[pos]={i:"",a:""};nm[pos][ia]=v;onChange(nm);};
+  return <div style={{marginTop:6}}>
+    <div style={{display:"grid",gridTemplateColumns:"1.5fr 1fr 1fr",gap:5,fontSize:10,color:C.tx2,marginBottom:3}}><span></span><span style={{textAlign:"center"}}>Innen [mm]</span><span style={{textAlign:"center"}}>Außen [mm]</span></div>
+    {RM_POS.map(([k,lbl])=><div key={k} style={{display:"grid",gridTemplateColumns:"1.5fr 1fr 1fr",gap:5,alignItems:"center",marginBottom:4}}>
+      <span style={{fontSize:11,color:C.tx2}}>{lbl}</span>
+      <input style={{...$.inp,...$.inpS,textAlign:"center"}} type="number" value={m[k]?.i||""} onChange={e=>set(k,"i",e.target.value)} placeholder="–"/>
+      <input style={{...$.inp,...$.inpS,textAlign:"center"}} type="number" value={m[k]?.a||""} onChange={e=>set(k,"a",e.target.value)} placeholder="–"/>
+    </div>)}
+  </div>;
+}
+
+// Editor für thermische Standardwerte (global + Projekt-Override)
+function ThermalEditor({tables,onChange}){
+  const T=tables;
+  const setCell=(cat,row,col,v)=>{const t=JSON.parse(JSON.stringify(T));if(col===null)t[cat][row]=v;else{if(!t[cat][row])t[cat][row]={};t[cat][row][col]=v;}onChange(t);};
+  const numIn=(v,onCh,step)=><input style={{...$.inp,...$.inpS,textAlign:"center",padding:"6px 4px"}} type="number" step={step} value={(v===0||v)?v:""} onChange={e=>onCh(e.target.value)}/>;
+  const list=(cat,types,step)=>types.map(t=><div key={t} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><span style={{flex:1,fontSize:12,color:C.tx2}}>{t}</span><div style={{width:90}}>{numIn(T[cat]?.[t],v=>setCell(cat,t,null,v),step)}</div></div>);
+  return <div>
+    <div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4}}>Uf – Rahmen [W/m²K]</div>
+    <div style={{overflowX:"auto"}}><div style={{minWidth:340}}>
+      <div style={{display:"grid",gridTemplateColumns:"96px repeat(4,1fr)",gap:4,marginBottom:3}}><span></span>{UF_EPOCHS.map(e=><span key={e} style={{fontSize:10,color:C.tx2,textAlign:"center"}}>{e}</span>)}</div>
+      {FRAME_MAT.filter(mm=>mm!=="Unbekannt").map(mm=><div key={mm} style={{display:"grid",gridTemplateColumns:"96px repeat(4,1fr)",gap:4,alignItems:"center",marginBottom:3}}>
+        <span style={{fontSize:11,color:C.tx2}}>{mm}</span>
+        {UF_EPOCHS.map(e=><div key={e}>{numIn(T.uf?.[mm]?.[e],v=>setCell("uf",mm,e,v),"0.01")}</div>)}
+      </div>)}
+    </div></div>
+    <div style={{fontSize:11,fontWeight:700,color:C.ac,margin:"10px 0 4px"}}>Ug – Glas [W/m²K]</div>{list("ug",GLAZ_TYPES.filter(t=>t!=="Unbekannt"),"0.01")}
+    <div style={{fontSize:11,fontWeight:700,color:C.ac,margin:"10px 0 4px"}}>g-Wert</div>{list("g",GLAZ_TYPES.filter(t=>t!=="Unbekannt"),"0.01")}
+    <div style={{fontSize:11,fontWeight:700,color:C.ac,margin:"10px 0 4px"}}>ψ – Randverbund [W/mK]</div>{list("psi",RV_TYPES.filter(t=>t!=="Unbekannt"),"0.001")}
+  </div>;
+}
+
 // Main App
 function App(){
   const[projects,setProjects]=useState([]);
@@ -268,6 +389,8 @@ function App(){
   const[customQty,setCustomQty]=useState("");
   const[confirmNav,setConfirmNav]=useState(null); // {action: fn}
   const[hasUnsaved,setHasUnsaved]=useState(false); // track unsaved numpad input
+  const[showGas,setShowGas]=useState(false); // optionalen Gasfüllgrad-Numpad ein-/ausklappen
+  const[globalTD,setGlobalTD]=useState(loadGlobalTD()); // globale thermische Standardwerte
 
   useEffect(()=>{dbAll().then(d=>{setProjects(d||[]);setLoading(false);}).catch(()=>setLoading(false));},[]);
   const flash=m=>{setToast(m);setTimeout(()=>setToast(null),2500);};
@@ -390,28 +513,41 @@ function App(){
   const setFV=(rId,fId,vId,k,val)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.data)t.data={};t.data[k]=val;}});};
   const setFS=(rId,fId,vId,k,s)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.sources)t.sources={};t.sources[k]=s;}});};
   const setZu=(rId,fId,v)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.zustandRahmen=v;});};
+  const setGeo=(rId,fId,g)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.geometrie=g;});};
+  const setMasse=(rId,fId,m)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.rahmenmasse=m;});};
   const addPh=(rId,fId,vId,ph)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t){if(!t.photos)t.photos=[];t.photos.push(ph);}});};
   const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});};
 
   const pSt=p=>{let g=0,m=0,ph=0;(p?.rooms||[]).forEach(r=>{ph+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{ph+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;ph+=(v.photos||[]).length;});});});return{rooms:(p?.rooms||[]).length,g,m,ph};};
-  const rSt=r=>{let g=0,m=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;}));return{f:(r?.fenster||[]).length,g,m};};
+  // Eine Verglasung gilt als "erfasst", wenn sie (oder ihr Fenster) dokumentiert ist – Messung, Foto, Daten oder Zustand. Nicht mehr nur an der Gasfüllgrad-Messung festgemacht.
+  const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||Object.values(f?.data||{}).some(x=>x&&(""+x).trim())||!!f?.zustandRahmen;
+  const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgErf(f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
   const isA=k=>(proj?.activeFields||[]).includes(k);
-  const fFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&isA(k));
+  const fFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&d.t!=="geo"&&d.t!=="masse"&&isA(k));
   const vFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&isA(k));
   const hasZ=()=>proj?.zustandModus&&proj.zustandModus!=="Keine"&&isA("zustandRahmen");
-  const getDef=(k)=>proj?.defaults?.[k]||"";
+  const getDef=(k,fenRec,vgRec)=>resolveDef(k,fenRec,vgRec,proj);
 
   if(loading)return <div style={{...$.app,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><span style={{color:C.tx2}}>Laden...</span></div>;
   const Toast=toast?<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:C.sf2,color:C.tx,padding:"9px 18px",borderRadius:8,fontSize:14,fontWeight:600,zIndex:300,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",border:`1px solid ${C.bd}`}}>{toast}</div>:null;
 
   // HOME
-  if(view==="home")return <div style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div></div><div style={$.body}>
+  if(view==="home")return <div style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("settings")}>⚙ Einstellungen</button></div><div style={$.body}>
     {projects.length>0&&projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}
     <button style={{...$.btn,...$.bP,...$.bBl,marginTop:16}} onClick={createProj}>+ Neues Projekt</button>
     <label style={{...$.btn,...$.bO,...$.bBl,marginTop:8,cursor:"pointer"}}>
       📂 Projekt importieren (JSON)
       <input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>impJSON(ev.target.result,false);r.readAsText(f);e.target.value="";}}/>
     </label>
+  </div>{Toast}</div>;
+
+  // GLOBALE EINSTELLUNGEN
+  if(view==="settings")return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Einstellungen</div></div><div style={$.body}>
+    <div style={$.card}><div style={$.cardT}>Standardwerte (Thermisch) – Global</div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:10}}>Referenzwerte zur Vorbelegung von Uf, Ug, g und ψ – frei anpassbar, keine Gewähr. Gelten für alle Projekte; einzelne Projekte können sie in der Einrichtung überschreiben.</div>
+      <ThermalEditor tables={globalTD} onChange={t=>{saveGlobalTD(t);setGlobalTD(t);}}/>
+      <button style={{...$.btn,...$.bO,...$.bS,marginTop:12}} onClick={()=>{if(confirm("Alle thermischen Standardwerte auf Werkseinstellung zurücksetzen?")){const t=JSON.parse(JSON.stringify(DEFAULT_TABLES));saveGlobalTD(t);setGlobalTD(t);flash("Zurückgesetzt");}}}>Auf Standardwerte zurücksetzen</button>
+    </div>
   </div>{Toast}</div>;
 
   // SETUP
@@ -441,6 +577,12 @@ function App(){
           :<input style={{...$.inp,...$.inpS}} type={d.t==="number"?"number":"text"} step={d.step||undefined} value={defs[k]||""} onChange={e=>setDef(k,e.target.value)} placeholder={d.ph||"Standardwert"}/>}
         </div>;
       })}
+    </div>
+
+    <div style={$.card}><div style={$.cardT}>Standardwerte (Thermisch) – Projekt</div>
+      <Tog label="Für dieses Projekt eigene Werte" value={!!p.thermalDefaults} onChange={on=>{if(on)setProj({...p,thermalDefaults:JSON.parse(JSON.stringify(effTD(p)))});else{const{thermalDefaults,...rest}=p;setProj(rest);}}}/>
+      {p.thermalDefaults?<div style={{marginTop:8}}><ThermalEditor tables={p.thermalDefaults} onChange={t=>setProj({...p,thermalDefaults:t})}/></div>
+      :<div style={{fontSize:11,color:C.tx2,marginTop:4}}>Nutzt die globalen Werte aus den Einstellungen (⚙ auf der Startseite).</div>}
     </div>
 
     <div style={$.card}><div style={$.cardT}>Raumimport (CSV)</div>
@@ -499,7 +641,7 @@ function App(){
         <span>{byF[fl].length} Räume</span>
         <span style={{fontSize:10,color:C.tx3,marginLeft:"auto"}}>{isCol?"ausblenden":"anzeigen"}</span>
       </div>
-      {!isCol&&byF[fl].map(rm=>{const rs=rSt(rm);const pct=rs.g>0?Math.round(rs.m/rs.g*100):0;return <div key={rm.id} style={$.li} onClick={()=>{setRoom(rm);setView("room");}}><div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>{rm.raumnummer||rm.raumId||"—"}{rm.raumId&&rm.raumnummer&&<span style={{fontSize:11,color:C.tx2,marginLeft:5}}>({rm.raumId})</span>}</div><div style={{fontSize:11,color:C.tx2}}>{rs.g} Vgl · {rs.m} M</div></div><div style={{display:"flex",alignItems:"center",gap:6}}>{pct>=100?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:pct>0?<span style={{...$.badge,background:C.warnBg,color:C.warn}}>{pct}%</span>:null}<span style={{color:C.tx3}}>›</span></div></div>;})}
+      {!isCol&&byF[fl].map(rm=>{const rs=rSt(rm);const pct=rs.g>0?Math.round(rs.e/rs.g*100):0;return <div key={rm.id} style={$.li} onClick={()=>{setRoom(rm);setView("room");}}><div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>{rm.raumnummer||rm.raumId||"—"}{rm.raumId&&rm.raumnummer&&<span style={{fontSize:11,color:C.tx2,marginLeft:5}}>({rm.raumId})</span>}</div><div style={{fontSize:11,color:C.tx2}}>{rs.g} Vgl · {rs.m} M</div></div><div style={{display:"flex",alignItems:"center",gap:6}}>{pct>=100?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:pct>0?<span style={{...$.badge,background:C.warnBg,color:C.warn}}>{pct}%</span>:null}<span style={{color:C.tx3}}>›</span></div></div>;})}
     </div>;})}
     <button style={{...$.btn,...$.bO,...$.bBl,marginTop:6}} onClick={()=>{setFmR({geschoss:"EG",raumnummer:"",raumId:""});setModal("addR");}}>+ Raum hinzufügen</button>
   </div>
@@ -533,19 +675,21 @@ function App(){
             {(v?.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf2,color:C.tx2}}>{v.messungen.length}×</span>}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
-            {lm?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:<span style={{...$.badge,background:C.sf2,color:C.tx3}}>offen</span>}
+            {vgErf(f,v)?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:<span style={{...$.badge,background:C.sf2,color:C.tx3}}>offen</span>}
             <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:14,padding:"2px 4px"}} onClick={e=>{e.stopPropagation();if(confirm(`${f.nr} löschen?`))delVg(rm.id,f.id,v?.id);}}>🗑</button>
             <span style={{color:C.tx3,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>›</span>
           </div>
         </div>
-        {vf.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{vf.slice(0,3).map(([k,d])=><div key={k} style={{flex:1,minWidth:80}}>{d.t==="select"?<select style={{...$.sel,...$.selS,fontSize:11}} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}><option value="">{getDef(k)?`Std: ${getDef(k)}`:d.label.split(" ")[0]+"..."}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>:<input style={{...$.inp,...$.inpS,fontSize:11}} placeholder={getDef(k)||d.label.split("[")[0]} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}/>}</div>)}</div>}
+        {vf.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{vf.slice(0,3).map(([k,d])=><div key={k} style={{flex:1,minWidth:80}}>{d.t==="select"?<select style={{...$.sel,...$.selS,fontSize:11}} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}><option value="">{getDef(k,f,v)?`Std: ${getDef(k,f,v)}`:d.label.split(" ")[0]+"..."}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>:<input style={{...$.inp,...$.inpS,fontSize:11}} placeholder={getDef(k,f,v)||d.label.split("[")[0]} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}/>}</div>)}</div>}
       </div>;}
-      else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16}}>🪟 {f.nr}</span>{f.verglasungen?.every(v=>v.messungen?.length>0)&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}</div>
-        {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k)}/>)}</div>}
+      else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16}}>🪟 {f.nr}</span>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}</div>
+        {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)}/>)}</div>}
         {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
+        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)}/></div>}
+        {isA("rahmenmasse")&&<div style={{marginBottom:8}}><div style={$.cardT}>Rahmen-Abmessungen</div><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
-            <span style={{fontWeight:700,fontSize:13}}>V{v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700}}>{lm.wert}%</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}
+            <span style={{fontWeight:700,fontSize:13}}>Verglasung {v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700}}>{lm.wert}%</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
             <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:13,padding:"2px 4px"}} onClick={()=>{if(confirm(`V${v.nr} löschen?`))delVg(rm.id,f.id,v.id);}}>🗑</button>
@@ -564,8 +708,8 @@ function App(){
   // MEASURE
   if(view==="measure"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);const v=f?.verglasungen?.find(x=>x.id===vg?.id);
     if(!rm||!f||!v){setView("room");return null;}
-    const isV=p.modus==="verglasung";const label=isV?f.nr:`${f.nr} · V${v.nr}`;const vf=vFs();
-    let all=[];rm.fenster.forEach(x=>x.verglasungen.forEach(y=>all.push({f:x,v:y})));const idx=all.findIndex(x=>x.v.id===v.id);const tot=all.length;const msd=all.filter(x=>x.v.messungen?.length>0).length;
+    const isV=p.modus==="verglasung";const label=isV?f.nr:`${f.nr} · Verglasung ${v.nr}`;const vf=vFs();
+    let all=[];rm.fenster.forEach(x=>x.verglasungen.forEach(y=>all.push({f:x,v:y})));const idx=all.findIndex(x=>x.v.id===v.id);const tot=all.length;const msd=all.filter(x=>vgErf(x.f,x.v)).length;
     const go=i=>{setFen(all[i].f);setVg(all[i].v);setNumVal("");};
     const navTo=(i)=>guardNav(()=>go(i));
     const navBack=()=>guardNav(()=>setView("room"));
@@ -583,12 +727,11 @@ function App(){
     };
 
   return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div style={$.body}>
-    <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>{idx+1}/{tot}</span><span>{msd}/{tot} gemessen</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
-    <div style={$.card}><div style={{...$.cardT,textAlign:"center"}}>Gasfüllgrad</div><NumPad value={numVal} onChange={setNumVal} onSubmit={val=>addMs(rm.id,f.id,v.id,val)}/></div>
-    {(v.messungen?.length||0)>0&&<div style={$.card}><div style={$.cardT}>Messungen ({v.messungen.length})</div>{v.messungen.map((m,mi)=><div key={mi} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:mi<v.messungen.length-1?`1px solid ${C.bd}`:"none"}}><div><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert}%</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div><button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:16,padding:4}} onClick={()=>delMs(rm.id,f.id,v.id,mi)}>×</button></div>)}</div>}
-    {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasungsdaten</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k)}/>)}</div>}
+    <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} erfasst</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
+    {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)}/>)}</div>}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><input style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onChange={e=>setFV(rm.id,f.id,v.id,"stempel",e.target.value)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
     <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
+    <div style={$.card}><div onClick={()=>setShowGas(g=>!g)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}><div style={{...$.cardT,marginBottom:0}}>Gasfüllgrad <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>· optional</span></div><div style={{display:"flex",alignItems:"center",gap:8}}>{(v.messungen?.length||0)>0&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:15}}>{v.messungen[v.messungen.length-1].wert}%</span>}<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span></div></div>{showGas&&<div style={{marginTop:12}}><NumPad value={numVal} onChange={setNumVal} onSubmit={val=>addMs(rm.id,f.id,v.id,val)}/>{(v.messungen?.length||0)>0&&<div style={{marginTop:10}}><div style={$.cardT}>Messungen ({v.messungen.length})</div>{v.messungen.map((m,mi)=><div key={mi} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:mi<v.messungen.length-1?`1px solid ${C.bd}`:"none"}}><div><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert}%</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div><button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:16,padding:4}} onClick={()=>delMs(rm.id,f.id,v.id,mi)}>×</button></div>)}</div>}</div>}</div>
     {/* Navigation */}
     <div style={{display:"flex",gap:6,marginTop:8}}>
       {idx>0&&<button style={{...$.btn,...$.bO,flex:1}} onClick={()=>navTo(idx-1)}>← Vorherige</button>}
