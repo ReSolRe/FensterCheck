@@ -151,6 +151,9 @@ function buildExport(p){
   const geoOn=af.has("geometrie"),masseOn=af.has("rahmenmasse");
   const ov=[];
   ov.push(["FensterCheck – Projektexport"],[],["Projektname",p.name||""],["Gebäude",p.gebaeude||""],["Adresse",p.adresse||""],
+    ["Begeher/in",p.begeher||""],["Begehungsdatum",p.begehungsdatum||""],["Witterung",p.witterung||""],
+    ["Temp. aussen [°C]",p.tempAussen||""],["Temp. innen [°C]",p.tempInnen||""],
+    ["Feuchte aussen [%rF]",p.feuchteAussen||""],["Feuchte innen [%rF]",p.feuchteInnen||""],
     ["Erstellt",p.erstellt?new Date(p.erstellt).toLocaleDateString("de-CH"):""],
     ["Geändert",p.geaendert?new Date(p.geaendert).toLocaleString("de-CH"):""],
     ["Modus",p.modus==="fenster"?"Fenster+Verglasungen":"Nur Verglasungen"],[]);
@@ -162,8 +165,8 @@ function buildExport(p){
   if(p.defaults&&Object.keys(p.defaults).length>0){ov.push([],["Standardwerte"]);Object.entries(p.defaults).forEach(([k,v])=>{if(v&&FIELDS[k])ov.push([FIELDS[k].label,v]);});}
 
   const mh=["Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Gasfüllgrad [%]","Messung-Nr","Zeitstempel","Datum","Uhrzeit"];
-  vf.forEach(([k,d])=>{mh.push(d.label);if(d.src)mh.push(d.label+" [Quelle]");});
-  ff.forEach(([k,d])=>{mh.push(d.label);if(d.src)mh.push(d.label+" [Quelle]");});
+  vf.forEach(([k,d])=>{mh.push(d.label);if(d.src&&p.showSrc)mh.push(d.label+" [Quelle]");});
+  ff.forEach(([k,d])=>{mh.push(d.label);if(d.src&&p.showSrc)mh.push(d.label+" [Quelle]");});
   if(p.zustandModus&&p.zustandModus!=="Keine")mh.push("Zustand Rahmen");
   if(geoOn)mh.push("Geometrie","Flügelzahl","Oberlicht","Brüstung","Stege H","Stege V");
   if(masseOn)mh.push("Rahmenmaße i/a [mm]");
@@ -174,8 +177,8 @@ function buildExport(p){
     const emit=(m,mi)=>{const z=m?new Date(m.zeit):null;
       const row=[room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||"",
         m?m.wert:"",m?mi+1:"",m?m.zeit:"",z?z.toLocaleDateString("de-CH"):"",z?z.toLocaleTimeString("de-CH"):""];
-      vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src)row.push(vg.sources?.[k]||"");});
-      ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src)row.push(fen.sources?.[k]||"");});
+      vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src&&p.showSrc)row.push(vg.sources?.[k]||"");});
+      ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src&&p.showSrc)row.push(fen.sources?.[k]||"");});
       if(p.zustandModus&&p.zustandModus!=="Keine")row.push(fen.zustandRahmen||"");
       if(geoOn){const g=fen.geometrie;row.push(geoSummary(g),g?.fluegel||"",g?.oberlicht?"Ja":(g?"Nein":""),g?.bruestung?"Ja":(g?"Nein":""),g?(g.stegeH||0):"",g?(g.stegeV||0):"");}
       if(masseOn)row.push(masseSummary(fen.rahmenmasse));
@@ -214,7 +217,8 @@ function doExcelExport(p){const d=buildExport(p);const wb=XLSX.utils.book_new();
   if(d.fr.length>1){const w4=XLSX.utils.aoa_to_sheet(d.fr);XLSX.utils.book_append_sheet(wb,w4,"Fotoverzeichnis");}
   XLSX.writeFile(wb,`FensterCheck_${p.name||"Export"}_${new Date().toISOString().slice(0,10)}.xlsx`);}
 function doCSVExport(p){const d=buildExport(p);const csv=d.mr.map(r=>r.map(c=>{const s=String(c??"");return s.includes(";")||s.includes('"')?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\n");const b=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`FensterCheck_${p.name||"Export"}_${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(u);}
-function doJSONExport(p){const b=new Blob([JSON.stringify(p,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`FensterCheck_${p.name||"Backup"}_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(u);}
+function stripPhotos(p){const c=JSON.parse(JSON.stringify(p));(c.rooms||[]).forEach(r=>{r.photos=[];(r.fenster||[]).forEach(f=>{f.photos=[];(f.verglasungen||[]).forEach(v=>{v.photos=[];});});});return c;}
+function doJSONExport(p,withoutPhotos){const data=withoutPhotos?stripPhotos(p):p;const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`FensterCheck_${p.name||"Backup"}${withoutPhotos?"_Daten":""}_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(u);}
 async function doPhotoExport(p){let n=0;const dl=async(data,name)=>{const a=document.createElement("a");a.href=data;a.download=name;a.click();n++;await new Promise(r=>setTimeout(r,250));};
   for(const rm of(p.rooms||[])){for(const ph of(rm.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_Raum_${ph.id.slice(-4)}.jpg`);
     for(const f of(rm.fenster||[])){for(const ph of(f.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_${f.nr}_${ph.id.slice(-4)}.jpg`);
@@ -265,10 +269,10 @@ const $={
 
 // Components
 function SrcPick({value:v,onChange:ch}){const cs={M:C.sM,H:C.sH,P:C.sP};return <div style={{display:"flex",gap:3}}>{DSRC.map(s=><div key={s} style={$.srcB(v===s,cs[s])} onClick={()=>ch(v===s?"":s)}>{s}</div>)}</div>;}
-function FldInp({k,def:d,value:v,source:s,onVal,onSrc,defaultVal}){
+function FldInp({k,def:d,value:v,source:s,onVal,onSrc,defaultVal,showSrc}){
   const displayed=v||defaultVal||"";const isDefault=!v&&defaultVal;
   return <div style={{marginBottom:8}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><label style={$.lbl}>{d.label}{isDefault&&<span style={{color:C.tx3,fontWeight:400}}> (Standard)</span>}</label>{d.src&&<SrcPick value={s} onChange={onSrc}/>}</div>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><label style={$.lbl}>{d.label}{isDefault&&<span style={{color:C.tx3,fontWeight:400}}> (Standard)</span>}</label>{d.src&&showSrc&&<SrcPick value={s} onChange={onSrc}/>}</div>
     {d.t==="select"?<select style={{...$.sel,...$.selS,color:isDefault?C.tx3:C.tx}} value={v||""} onChange={e=>onVal(e.target.value)}><option value="">{defaultVal?`Standard: ${defaultVal}`:"— Auswahl —"}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>
     :<input style={{...$.inp,...$.inpS,color:isDefault?C.tx3:C.tx}} type={d.t==="number"?"number":"text"} step={d.step||undefined} value={v||""} onChange={e=>onVal(e.target.value)} placeholder={defaultVal||d.ph||""}/>}
   </div>;
@@ -280,9 +284,9 @@ function ZustInp({modus:m,value:v,onChange:ch}){
   return null;
 }
 function Photos({photos:ps,onAdd,onDel,label:l}){
-  const ref=useRef();
-  const h=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{const img=new Image();img.onload=()=>{const c=document.createElement("canvas");const mx=1200;let w=img.width,h=img.height;if(w>mx||h>mx){if(w>h){h=(h/w)*mx;w=mx;}else{w=(w/h)*mx;h=mx;}}c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);onAdd({id:uid(),data:c.toDataURL("image/jpeg",0.7),zeit:new Date().toISOString()});};img.src=ev.target.result;};r.readAsDataURL(f);e.target.value="";};
-  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length})</span><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>ref.current?.click()}>📷</button><input ref={ref} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/></div>{ps.length>0&&<div style={$.phG}>{ps.map(p=><div key={p.id} style={{position:"relative"}}><img src={p.data} style={$.phT} alt=""/><div onClick={()=>onDel(p.id)} style={{position:"absolute",top:2,right:2,width:18,height:18,borderRadius:9,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,cursor:"pointer"}}>×</div></div>)}</div>}</div>;
+  const camRef=useRef(),galRef=useRef();
+  const h=e=>{[...e.target.files].forEach(f=>{if(!f)return;const r=new FileReader();r.onload=ev=>{const img=new Image();img.onload=()=>{const c=document.createElement("canvas");const mx=1200;let w=img.width,hh=img.height;if(w>mx||hh>mx){if(w>hh){hh=(hh/w)*mx;w=mx;}else{w=(w/hh)*mx;hh=mx;}}c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);onAdd({id:uid(),data:c.toDataURL("image/jpeg",0.7),zeit:new Date().toISOString()});};img.src=ev.target.result;};r.readAsDataURL(f);});e.target.value="";};
+  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length})</span><div style={{display:"flex",gap:5}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>camRef.current?.click()}>📷</button><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>galRef.current?.click()}>🖼️</button></div><input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/><input ref={galRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={h}/></div>{ps.length>0&&<div style={$.phG}>{ps.map(p=><div key={p.id} style={{position:"relative"}}><img src={p.data} style={$.phT} alt=""/><div onClick={()=>onDel(p.id)} style={{position:"absolute",top:2,right:2,width:18,height:18,borderRadius:9,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,cursor:"pointer"}}>×</div></div>)}</div>}</div>;
 }
 function NumPad({value:v,onChange:ch,onSubmit:sub}){
   const pr=k=>{if(k==="DEL")ch(v.slice(0,-1));else if(k==="."){if(!v.includes("."))ch(v+".");}else ch(v+k);};
@@ -518,7 +522,7 @@ function App(){
   const addPh=(rId,fId,vId,ph)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t){if(!t.photos)t.photos=[];t.photos.push(ph);}});};
   const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});};
 
-  const pSt=p=>{let g=0,m=0,ph=0;(p?.rooms||[]).forEach(r=>{ph+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{ph+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;ph+=(v.photos||[]).length;});});});return{rooms:(p?.rooms||[]).length,g,m,ph};};
+  const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=(x.data||"").length;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});return{rooms:(p?.rooms||[]).length,g,m,ph,mb:pb/1048576};};
   // Eine Verglasung gilt als "erfasst", wenn sie (oder ihr Fenster) dokumentiert ist – Messung, Foto, Daten oder Zustand. Nicht mehr nur an der Gasfüllgrad-Messung festgemacht.
   const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||Object.values(f?.data||{}).some(x=>x&&(""+x).trim())||!!f?.zustandRahmen;
   const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgErf(f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
@@ -561,6 +565,22 @@ function App(){
     };
   return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(p.rooms?.length?"survey":"home")}>← Zurück</button><div style={$.hdrT}>Einrichtung</div><button style={$.hdrB} onClick={()=>{save(p);setView("survey");flash("✓");}}>Fertig</button></div><div style={$.body}>
     <div style={$.card}><div style={$.cardT}>Projekt</div><div style={{marginBottom:8}}><label style={$.lbl}>Name</label><input style={$.inp} value={p.name||""} onChange={e=>setProj({...p,name:e.target.value})} placeholder="Projektname"/></div><div style={{marginBottom:8}}><label style={$.lbl}>Gebäude</label><input style={$.inp} value={p.gebaeude||""} onChange={e=>setProj({...p,gebaeude:e.target.value})}/></div><div><label style={$.lbl}>Adresse</label><input style={$.inp} value={p.adresse||""} onChange={e=>setProj({...p,adresse:e.target.value})}/></div></div>
+    <div style={$.card}><div style={$.cardT}>Begehung</div>
+      <div style={{display:"flex",gap:8,marginBottom:8}}>
+        <div style={{flex:2}}><label style={$.lbl}>Begeher/in</label><input style={$.inp} value={p.begeher||""} onChange={e=>setProj({...p,begeher:e.target.value})} placeholder="Name"/></div>
+        <div style={{flex:1.2}}><label style={$.lbl}>Datum</label><input style={$.inp} type="date" value={p.begehungsdatum||""} onChange={e=>setProj({...p,begehungsdatum:e.target.value})}/></div>
+      </div>
+      <div style={{marginBottom:8}}><label style={$.lbl}>Witterung</label><input style={$.inp} value={p.witterung||""} onChange={e=>setProj({...p,witterung:e.target.value})} placeholder="z.B. bedeckt, trocken"/></div>
+      <div style={{display:"flex",gap:8,marginBottom:8}}>
+        <div style={{flex:1}}><label style={$.lbl}>Temp. außen [°C]</label><input style={$.inp} type="number" step="0.5" value={p.tempAussen||""} onChange={e=>setProj({...p,tempAussen:e.target.value})}/></div>
+        <div style={{flex:1}}><label style={$.lbl}>Temp. innen [°C]</label><input style={$.inp} type="number" step="0.5" value={p.tempInnen||""} onChange={e=>setProj({...p,tempInnen:e.target.value})}/></div>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <div style={{flex:1}}><label style={$.lbl}>Feuchte außen [%rF]</label><input style={$.inp} type="number" value={p.feuchteAussen||""} onChange={e=>setProj({...p,feuchteAussen:e.target.value})}/></div>
+        <div style={{flex:1}}><label style={$.lbl}>Feuchte innen [%rF]</label><input style={$.inp} type="number" value={p.feuchteInnen||""} onChange={e=>setProj({...p,feuchteInnen:e.target.value})}/></div>
+      </div>
+    </div>
+    <div style={$.card}><div style={$.cardT}>Optionen</div><Tog label="Datenquelle erfassen (M/H/P)" value={!!p.showSrc} onChange={v=>setProj({...p,showSrc:v})}/><div style={{fontSize:11,color:C.tx2,marginTop:2}}>Blendet die Quelle-Auswahl (Messwert/Hersteller/Planung) je Wert ein.</div></div>
     <div style={$.card}><div style={$.cardT}>Modus</div>{hasData(p)&&<div style={{fontSize:11,color:C.warn,marginBottom:6}}>⚠ Modus kann nicht geändert werden, da bereits Messdaten vorhanden sind.</div>}<div style={{display:"flex",gap:8}}>{[["verglasung","◻","Nur Verglasungen"],["fenster","⊞","Fenster + Verglasung"]].map(([m,i,t])=><div key={m} onClick={()=>trySetModus(m)} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center",opacity:hasData(p)&&p.modus!==m?0.4:1}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Zustand Rahmen</div><div style={{display:"flex",gap:4}}>{["Keine","Einfach","Freitext","Detailliert"].map(z=><div key={z} onClick={()=>setProj({...p,zustandModus:z})} style={{flex:1,padding:"7px 2px",borderRadius:6,border:`1px solid ${(p.zustandModus||"Keine")===z?C.ac:C.bd}`,background:(p.zustandModus||"Keine")===z?C.acBg:"transparent",cursor:"pointer",textAlign:"center",fontSize:11,fontWeight:600}}>{z}</div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Profil</div><div style={{display:"flex",gap:6,marginBottom:10}}>{Object.entries(PRESETS).map(([k,pr])=><button key={k} style={{...$.btn,...$.bO,...$.bS,flex:1,flexDirection:"column",padding:"8px 4px",height:"auto"}} onClick={()=>setProj({...p,activeFields:[...pr.fields]})}><span style={{fontWeight:700,fontSize:12}}>{pr.name}</span><span style={{fontSize:9,color:C.tx2}}>{pr.desc}</span></button>)}</div>
@@ -627,10 +647,11 @@ function App(){
     const togFloor=f=>setCollapsed(prev=>({...prev,[f]:!prev[f]}));
   return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{s.rooms}</div><div style={$.statL}>Räume</div></div><div style={$.stat}><div style={$.statV}>{s.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{s.m}</div><div style={$.statL}>Mess.</div></div><div style={$.stat}><div style={$.statV}>{s.ph}</div><div style={$.statL}>Fotos</div></div></div>
-    <div style={{...$.card,padding:12}}><div style={$.cardT}>Export</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+    <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler");}}} >📊 Excel</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doCSVExport(p);flash("CSV ✓");}}>📄 CSV</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p);flash("Backup ✓");}}>💾 Backup</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p);flash("Backup ✓");}}>💾 Backup (mit Fotos)</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p,true);flash("Daten-Backup ✓");}}>📃 Daten (o. Fotos)</button>
       {s.ph>0&&<button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={async()=>{flash("Fotos...");const n=await doPhotoExport(p);flash(`${n} Fotos ✓`);}}>📷 Fotos ({s.ph})</button>}
     </div></div>
     {fls.length===0?<div style={$.empty}><div style={{fontSize:38,marginBottom:8}}>🏢</div><div style={{fontWeight:700}}>Keine Räume</div></div>
@@ -645,7 +666,7 @@ function App(){
     </div>;})}
     <button style={{...$.btn,...$.bO,...$.bBl,marginTop:6}} onClick={()=>{setFmR({geschoss:"EG",raumnummer:"",raumId:""});setModal("addR");}}>+ Raum hinzufügen</button>
   </div>
-    {modal==="addR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Raum hinzufügen</div><div style={{marginBottom:8}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={fmR.geschoss} onChange={e=>setFmR({...fmR,geschoss:e.target.value})}>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div><div style={{marginBottom:8}}><label style={$.lbl}>Raumnummer</label><input style={$.inp} value={fmR.raumnummer} onChange={e=>setFmR({...fmR,raumnummer:e.target.value})} placeholder="z.B. 101" autoFocus/></div><div style={{marginBottom:14}}><label style={$.lbl}>Raum-ID</label><input style={$.inp} value={fmR.raumId} onChange={e=>setFmR({...fmR,raumId:e.target.value})}/></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={addRoom}>Hinzufügen</button></div></div>}
+    {modal==="addR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Raum hinzufügen</div><div style={{marginBottom:8}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={fmR.geschoss} onChange={e=>setFmR({...fmR,geschoss:e.target.value})}>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div><div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} value={fmR.raumnummer} onChange={e=>setFmR({...fmR,raumnummer:e.target.value})} placeholder="z.B. 101 oder Turnhalle" autoFocus/></div><div style={{marginBottom:14}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={fmR.raumId} onChange={e=>setFmR({...fmR,raumId:e.target.value})}/></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={addRoom}>Hinzufügen</button></div></div>}
   {Toast}</div>;}
 
   // ROOM
@@ -683,7 +704,7 @@ function App(){
         {vf.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{vf.slice(0,3).map(([k,d])=><div key={k} style={{flex:1,minWidth:80}}>{d.t==="select"?<select style={{...$.sel,...$.selS,fontSize:11}} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}><option value="">{getDef(k,f,v)?`Std: ${getDef(k,f,v)}`:d.label.split(" ")[0]+"..."}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>:<input style={{...$.inp,...$.inpS,fontSize:11}} placeholder={getDef(k,f,v)||d.label.split("[")[0]} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}/>}</div>)}</div>}
       </div>;}
       else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16}}>🪟 {f.nr}</span>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}</div>
-        {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)}/>)}</div>}
+        {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>)}</div>}
         {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
         {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)}/></div>}
         {isA("rahmenmasse")&&<div style={{marginBottom:8}}><div style={$.cardT}>Rahmen-Abmessungen</div><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>}
@@ -728,7 +749,7 @@ function App(){
 
   return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div style={$.body}>
     <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} erfasst</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
-    {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)}/>)}</div>}
+    {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>)}</div>}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><input style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onChange={e=>setFV(rm.id,f.id,v.id,"stempel",e.target.value)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
     <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
     <div style={$.card}><div onClick={()=>setShowGas(g=>!g)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}><div style={{...$.cardT,marginBottom:0}}>Gasfüllgrad <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>· optional</span></div><div style={{display:"flex",alignItems:"center",gap:8}}>{(v.messungen?.length||0)>0&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:15}}>{v.messungen[v.messungen.length-1].wert}%</span>}<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span></div></div>{showGas&&<div style={{marginTop:12}}><NumPad value={numVal} onChange={setNumVal} onSubmit={val=>addMs(rm.id,f.id,v.id,val)}/>{(v.messungen?.length||0)>0&&<div style={{marginTop:10}}><div style={$.cardT}>Messungen ({v.messungen.length})</div>{v.messungen.map((m,mi)=><div key={mi} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:mi<v.messungen.length-1?`1px solid ${C.bd}`:"none"}}><div><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert}%</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div><button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:16,padding:4}} onClick={()=>delMs(rm.id,f.id,v.id,mi)}>×</button></div>)}</div>}</div>}</div>
