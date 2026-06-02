@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="FensterCheck">
 <meta name="theme-color" content="#4da3ff">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
 <title>FensterCheck</title>
 <link rel="manifest" href="manifest.json">
 <style>
@@ -50,6 +51,8 @@ const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
 const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
 const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
 const ROW_ROLES=["Hauptfenster","Oberlicht","Brüstung","Seitenteil","Zwischenfeld"];
+const APP_VERSION="v12 · Juni 2026";
+const APP_REPO="https://github.com/ReSolRe/FensterCheck";
 
 // Editierbare thermische Standardwerte (global + Projekt-Override)
 const UF_EPOCHS=["<1980","1980-1994","1995-2009",">=2010"];
@@ -597,7 +600,7 @@ function App(){
   const Toast=toast?<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:C.sf2,color:C.tx,padding:"9px 18px",borderRadius:8,fontSize:14,fontWeight:600,zIndex:300,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",border:`1px solid ${C.bd}`}}>{toast}</div>:null;
 
   // HOME
-  if(view==="home")return <div style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("settings")}>⚙ Einstellungen</button></div><div style={$.body}>
+  if(view==="home")return <div style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("info")}>ℹ️</button><button style={$.hdrB} onClick={()=>setView("settings")}>⚙</button></div><div style={$.body}>
     {projects.length>0&&projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}
     <button style={{...$.btn,...$.bP,...$.bBl,marginTop:16}} onClick={createProj}>+ Neues Projekt</button>
     <label style={{...$.btn,...$.bO,...$.bBl,marginTop:8,cursor:"pointer"}}>
@@ -612,6 +615,36 @@ function App(){
       <div style={{fontSize:11,color:C.tx2,marginBottom:10}}>Referenzwerte zur Vorbelegung von Uf, Ug, g und ψ – frei anpassbar, keine Gewähr. Gelten für alle Projekte; einzelne Projekte können sie in der Einrichtung überschreiben.</div>
       <ThermalEditor tables={globalTD} onChange={t=>{saveGlobalTD(t);setGlobalTD(t);}}/>
       <button style={{...$.btn,...$.bO,...$.bS,marginTop:12}} onClick={()=>{if(confirm("Alle thermischen Standardwerte auf Werkseinstellung zurücksetzen?")){const t=JSON.parse(JSON.stringify(DEFAULT_TABLES));saveGlobalTD(t);setGlobalTD(t);flash("Zurückgesetzt");}}}>Auf Standardwerte zurücksetzen</button>
+    </div>
+  </div>{Toast}</div>;
+
+  // INFO / ÜBER
+  if(view==="info")return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Info & Anleitung</div></div><div style={$.body}>
+    <div style={$.card}><div style={$.cardT}>Über FensterCheck</div>
+      <div style={{fontSize:13,lineHeight:1.5}}>Mobile App zur systematischen Erfassung von Fenstern bei Gebäudebegehungen – Geometrie, Rahmen, Verglasung, thermische Kennwerte (Uf/Ug/g/ψ), Zustand und Fotos. Läuft als installierbare PWA und vollständig offline auf dem Gerät.</div>
+      <div style={{fontSize:11,color:C.tx2,marginTop:8}}>Version {APP_VERSION} · Entwickelt am INEB FHNW</div>
+    </div>
+    <div style={$.card}><div style={$.cardT}>Kurzanleitung</div>
+      <ol style={{margin:0,paddingLeft:18,fontSize:13,lineHeight:1.55}}>
+        <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und Profil wählen.</li>
+        <li><b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren.</li>
+        <li><b>Fenster</b> hinzufügen (auch mehrere identische auf einmal); optional die <b>Geometrie</b> skizzieren und Felder antippen → Öffnungsart, Bandseite, Verglasung.</li>
+        <li><b>Verglasung</b> öffnen → Daten erfassen (Ug/g/ψ mit Standardwerten), <b>Gasfüllgrad</b> optional messen, <b>Fotos</b> (📷 Kamera / 🖼️ Galerie).</li>
+        <li><b>Thermische Standardwerte</b> global oder pro Projekt unter <b>⚙ Einstellungen</b> anpassen.</li>
+        <li><b>Export</b> als Excel/CSV; <b>Backup</b> als JSON (mit oder ohne Fotos).</li>
+      </ol>
+    </div>
+    <div style={$.card}><div style={$.cardT}>Daten & Datenschutz</div>
+      <div style={{fontSize:13,lineHeight:1.5}}>Alle Daten bleiben <b>lokal auf dem Gerät</b> (IndexedDB/localStorage); es findet <b>keine Übertragung an einen Server</b> statt. Bitte regelmässig ein JSON-Backup erstellen – beim Löschen der Browserdaten gehen die Erfassungen sonst verloren. Die App ist für Suchmaschinen ausgeblendet (noindex) und nur per Link erreichbar.</div>
+    </div>
+    <div style={$.card}><div style={$.cardT}>Impressum</div>
+      <div style={{fontSize:13,lineHeight:1.5}}>Fachhochschule Nordwestschweiz (FHNW)<br/>Institut für Energie am Bau (INEB)<br/>Kontakt: <a href="mailto:gregor.steinke@fhnw.ch" style={{color:C.ac}}>gregor.steinke@fhnw.ch</a></div>
+    </div>
+    <div style={$.card}><div style={$.cardT}>Lizenz</div>
+      <div style={{fontSize:13,lineHeight:1.5}}>© 2026 FHNW – Institut für Energie am Bau (INEB). Internes Werkzeug, alle Rechte vorbehalten. Nutzung und Weitergabe nur mit Zustimmung des INEB.</div>
+    </div>
+    <div style={$.card}><div style={$.cardT}>Quellcode</div>
+      <div style={{fontSize:13,lineHeight:1.5}}><a href={APP_REPO} target="_blank" rel="noopener noreferrer" style={{color:C.ac}}>github.com/ReSolRe/FensterCheck</a><div style={{fontSize:11,color:C.tx2,marginTop:6}}>Erstellt mit Unterstützung von Claude (Anthropic).</div></div>
     </div>
   </div>{Toast}</div>;
 
