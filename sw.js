@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fenstercheck-v14';
+const CACHE_NAME = 'fenstercheck-v15';
 const ASSETS = [
   './',
   './index.html',
