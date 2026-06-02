@@ -17,6 +17,16 @@ body{background:#0b0f14;color:#e4eaf2;font-family:-apple-system,BlinkMacSystemFo
 input,select,textarea,button{font-family:inherit}
 input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
 ::-webkit-scrollbar{width:0}
+/* Tablet/PC im Querformat: breiterer Container + mehrspaltige Eingabe. Mobil (<900px) unverändert. */
+@media(min-width:900px){
+  .app{max-width:1040px!important}
+  .body{column-count:2;column-gap:18px}
+  .body>*{break-inside:avoid;-webkit-column-break-inside:avoid}
+}
+@media(min-width:1500px){
+  .app{max-width:1380px!important}
+  .body{column-count:3}
+}
 </style>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -600,7 +610,7 @@ function App(){
   const Toast=toast?<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:C.sf2,color:C.tx,padding:"9px 18px",borderRadius:8,fontSize:14,fontWeight:600,zIndex:300,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",border:`1px solid ${C.bd}`}}>{toast}</div>:null;
 
   // HOME
-  if(view==="home")return <div style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("info")}>ℹ️</button><button style={$.hdrB} onClick={()=>setView("settings")}>⚙</button></div><div style={$.body}>
+  if(view==="home")return <div className="app" style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("info")}>ℹ️</button><button style={$.hdrB} onClick={()=>setView("settings")}>⚙</button></div><div className="body" style={$.body}>
     {projects.length>0&&projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}
     <button style={{...$.btn,...$.bP,...$.bBl,marginTop:16}} onClick={createProj}>+ Neues Projekt</button>
     <label style={{...$.btn,...$.bO,...$.bBl,marginTop:8,cursor:"pointer"}}>
@@ -610,7 +620,7 @@ function App(){
   </div>{Toast}</div>;
 
   // GLOBALE EINSTELLUNGEN
-  if(view==="settings")return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Einstellungen</div></div><div style={$.body}>
+  if(view==="settings")return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Einstellungen</div></div><div className="body" style={$.body}>
     <div style={$.card}><div style={$.cardT}>Standardwerte (Thermisch) – Global</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:10}}>Referenzwerte zur Vorbelegung von Uf, Ug, g und ψ – frei anpassbar, keine Gewähr. Gelten für alle Projekte; einzelne Projekte können sie in der Einrichtung überschreiben.</div>
       <ThermalEditor tables={globalTD} onChange={t=>{saveGlobalTD(t);setGlobalTD(t);}}/>
@@ -619,7 +629,7 @@ function App(){
   </div>{Toast}</div>;
 
   // INFO / ÜBER
-  if(view==="info")return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Info & Anleitung</div></div><div style={$.body}>
+  if(view==="info")return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Info & Anleitung</div></div><div className="body" style={$.body}>
     <div style={$.card}><div style={$.cardT}>Über FensterCheck</div>
       <div style={{fontSize:13,lineHeight:1.5}}>Mobile App zur systematischen Erfassung von Fenstern bei Gebäudebegehungen – Geometrie, Rahmen, Verglasung, thermische Kennwerte (Uf/Ug/g/ψ), Zustand und Fotos. Läuft als installierbare PWA und vollständig offline auf dem Gerät.</div>
       <div style={{fontSize:11,color:C.tx2,marginTop:8}}>Version {APP_VERSION} · Entwickelt am INEB FHNW</div>
@@ -657,7 +667,7 @@ function App(){
       if(hasData(p)){flash("⚠ Moduswechsel bei vorhandenen Daten nicht möglich. Neues Projekt erstellen.");return;}
       setProj({...p,modus:m});
     };
-  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(p.rooms?.length?"survey":"home")}>← Zurück</button><div style={$.hdrT}>Einrichtung</div><button style={$.hdrB} onClick={()=>{save(p);setView("survey");flash("✓");}}>Fertig</button></div><div style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(p.rooms?.length?"survey":"home")}>← Zurück</button><div style={$.hdrT}>Einrichtung</div><button style={$.hdrB} onClick={()=>{save(p);setView("survey");flash("✓");}}>Fertig</button></div><div className="body" style={$.body}>
     <div style={$.card}><div style={$.cardT}>Projekt</div><div style={{marginBottom:8}}><label style={$.lbl}>Name</label><input style={$.inp} value={p.name||""} onChange={e=>setProj({...p,name:e.target.value})} placeholder="Projektname"/></div><div style={{marginBottom:8}}><label style={$.lbl}>Gebäude</label><input style={$.inp} value={p.gebaeude||""} onChange={e=>setProj({...p,gebaeude:e.target.value})}/></div><div><label style={$.lbl}>Adresse</label><input style={$.inp} value={p.adresse||""} onChange={e=>setProj({...p,adresse:e.target.value})}/></div></div>
     <div style={$.card}><div style={$.cardT}>Begehung</div>
       <div style={{display:"flex",gap:8,marginBottom:8}}>
@@ -739,7 +749,7 @@ function App(){
     const byF={};(p.rooms||[]).forEach(r=>{const f=r.geschoss||"?";if(!byF[f])byF[f]=[];byF[f].push(r);});
     const fls=FLOORS.filter(f=>byF[f]);Object.keys(byF).forEach(f=>{if(!fls.includes(f))fls.push(f);});
     const togFloor=f=>setCollapsed(prev=>({...prev,[f]:!prev[f]}));
-  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{s.rooms}</div><div style={$.statL}>Räume</div></div><div style={$.stat}><div style={$.statV}>{s.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{s.m}</div><div style={$.statL}>Mess.</div></div><div style={$.stat}><div style={$.statV}>{s.ph}</div><div style={$.statL}>Fotos</div></div></div>
     <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler");}}} >📊 Excel</button>
@@ -766,7 +776,7 @@ function App(){
   // ROOM
   if(view==="room"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);if(!rm){setView("survey");return null;}
     const rs=rSt(rm);const isV=p.modus==="verglasung";const ff=fFs();const vf=vFs();
-  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}</div><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}</div><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
     {/* Quick add with custom input */}
     {isV&&<div style={{...$.card,padding:10}}>
@@ -848,7 +858,7 @@ function App(){
       flash("Weitere Verglasung +");
     };
 
-  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div className="body" style={$.body}>
     <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} erfasst</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
     {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>)}</div>}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><input style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onChange={e=>setFV(rm.id,f.id,v.id,"stempel",e.target.value)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
