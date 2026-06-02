@@ -49,6 +49,7 @@ const DSRC=["M","H","P"];
 const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
 const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
 const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
+const ROW_ROLES=["Hauptfenster","Oberlicht","Brüstung","Seitenteil","Zwischenfeld"];
 
 // Editierbare thermische Standardwerte (global + Projekt-Override)
 const UF_EPOCHS=["<1980","1980-1994","1995-2009",">=2010"];
@@ -94,7 +95,7 @@ function shiftCells(cells,delta){const out={};Object.keys(cells||{}).forEach(k=>
 function dropRowCells(ri,cells){const out={};Object.keys(cells||{}).forEach(k=>{const[r,c]=k.split(":").map(Number);if(r===ri)return;out[(r>ri?r-1:r)+":"+c]=cells[k];});return out;}
 function geoCellCount(g){g=normalizeGeo(g);return (g.rows||[]).reduce((s,r)=>s+(r.cols||1),0);}
 function geoSummary(g){g=normalizeGeo(g);const rows=g.rows||[];if(!rows.length)return "";
-  const parts=[rows.map(r=>(r.cols||1)+"-flg").join("/")];
+  const parts=[rows.map(r=>(r.role?r.role+":":"")+(r.cols||1)+"-flg").join("/")];
   const ops=[];Object.keys(g.cells||{}).sort().forEach(k=>{const c=g.cells[k];if(c&&c.art)ops.push(c.art+(c.band?"("+c.band+")":""));});
   if(ops.length)parts.push("Öffnung: "+ops.join(", "));
   return parts.join("; ");}
@@ -102,7 +103,7 @@ function masseSummary(m){if(!m)return "";const ab={oben:"O",unten:"U",links:"L",
 
 // Fields that support project-level defaults
 const DEFAULTABLE_FIELDS = [
-  "verglasungsTyp","scheibenaufbau","glasDichtung","lowE","gasart","randverbundTyp",
+  "verglasungsTyp","scheibenaufbau","glasDichtung","glasDichtungAussen","lowE","gasart","randverbundTyp",
   "ugWert","gWert","rahmenMaterial","rahmenProfiltiefe","baujahr",
   "ufWert","psiWert","dichtungAnzahl","dichtungMaterial"
 ];
@@ -127,7 +128,8 @@ const FIELDS={
   rahmenmasse:{label:"Rahmen-Abmessungen (Detail)",g:"f",t:"masse"},
   verglasungsTyp:{label:"Verglasungsaufbau",g:"v",t:"select",o:GLAZ_TYPES},
   scheibenaufbau:{label:"Scheibenaufbau [mm]",g:"v",t:"text",ph:"z.B. 4/16/4",hint:"Format: Glas/Zwischenraum/Glas in mm – z.B. 4/16/4 oder 4/12/4/12/4",src:true},
-  glasDichtung:{label:"Verglasungsdichtung",g:"v",t:"select",o:VG_DICHT},
+  glasDichtung:{label:"Verglasungsdichtung innen",g:"v",t:"select",o:VG_DICHT},
+  glasDichtungAussen:{label:"Verglasungsdichtung außen",g:"v",t:"select",o:VG_DICHT},
   lowE:{label:"Low-E Beschichtung",g:"v",t:"select",o:LOWE_OPT},
   gasart:{label:"Gasart",g:"v",t:"select",o:GAS_TYPES},
   randverbundTyp:{label:"Randverbund-Typ",g:"v",t:"select",o:RV_TYPES},
@@ -143,7 +145,7 @@ const FIELDS={
 
 const PRESETS={
   schnell:{name:"Schnell",desc:"Gasfüllgrad + Typ",fields:["verglasungsTyp"]},
-  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterTyp","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau","glasDichtung","psiWert"]},
+  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterTyp","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau","glasDichtung","glasDichtungAussen","psiWert"]},
   voll:{name:"Voll",desc:"Alle Felder",fields:Object.keys(FIELDS)},
 };
 
@@ -323,24 +325,27 @@ function openingSymbol(cell,x,y,w,h,key){
   const L=(x1,y1,x2,y2,i)=><line key={key+"_"+i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={col} strokeWidth={sw} style={{pointerEvents:"none"}}/>;
   const drehL=()=>[L(x+w-m,y+m,x+m,cy,1),L(x+w-m,y+h-m,x+m,cy,2)];
   const drehR=()=>[L(x+m,y+m,x+w-m,cy,1),L(x+m,y+h-m,x+w-m,cy,2)];
-  const kipp=()=>[L(x+m,y+m,cx,y+h-m,3),L(x+w-m,y+m,cx,y+h-m,4)];
-  const klapp=()=>[L(x+m,y+h-m,cx,y+m,5),L(x+w-m,y+h-m,cx,y+m,6)];
+  const apexTop=()=>[L(x+m,y+h-m,cx,y+m,3),L(x+w-m,y+h-m,cx,y+m,4)];   // Spitze oben → Kipp
+  const apexBottom=()=>[L(x+m,y+m,cx,y+h-m,5),L(x+w-m,y+m,cx,y+h-m,6)]; // Spitze unten → Klapp
   if(a==="Dreh"||a==="Dreh-Kipp")els.push(...(band==="R"?drehR():drehL()));
-  if(a==="Kipp"||a==="Dreh-Kipp")els.push(...kipp());
-  if(a==="Klapp")els.push(...klapp());
+  if(a==="Kipp"||a==="Dreh-Kipp")els.push(...apexTop());
+  if(a==="Klapp")els.push(...apexBottom());
   if(a==="Schiebe")els.push(L(x+m,cy,x+w-m,cy,7),L(x+w-m,cy,x+w-m-5,cy-3,8),L(x+w-m,cy,x+w-m-5,cy+3,9));
   return els;
 }
 
 // Fenstergeometrie – Zeilen-Modell, Feld antippen → auswählen
-function GeoEditor({geo,onChange}){
+function GeoEditor({geo,onChange,verglasungen,onJump}){
   const g=normalizeGeo(geo);
   const[sel,setSel]=useState(null);
   const rows=g.rows;
+  const vgs=verglasungen||[];
+  const vgNr=id=>{const v=vgs.find(x=>x.id===id);return v?v.nr:null;};
   const setCols=(ri,cols)=>{const nr=rows.map((r,i)=>i===ri?{...r,cols,w:Array.from({length:cols},(_,j)=>(r.w&&r.w[j])||1)}:r);onChange({...g,rows:nr,cells:pruneCells(nr,g.cells)});};
   const setH=(ri,dh)=>onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,h:Math.max(1,(r.h||1)+dh)}:r)});
   const setW=(ri,ci,dw)=>{const row=rows[ri],cols=row.cols||1,w=Array.from({length:cols},(_,j)=>(row.w&&row.w[j])||1);w[ci]=Math.max(1,(w[ci]||1)+dw);onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,w}:r)});};
-  const addRow=top=>onChange({...g,rows:top?[{h:1,cols:1},...rows]:[...rows,{h:1,cols:1}],cells:top?shiftCells(g.cells,1):g.cells});
+  const addRow=(top,role)=>onChange({...g,rows:top?[{h:1,cols:1,role},...rows]:[...rows,{h:1,cols:1,role}],cells:top?shiftCells(g.cells,1):g.cells});
+  const setRole=(ri,role)=>onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,role}:r)});
   const delRow=ri=>{if(rows.length<=1)return;onChange({...g,rows:rows.filter((_,i)=>i!==ri),cells:dropRowCells(ri,g.cells)});setSel(null);};
   const setCell=(key,patch)=>onChange({...g,cells:{...g.cells,[key]:{art:"",band:"",...(g.cells[key]||{}),...patch}}});
   const VW=300,PAD=8,MULL=2,BAR=1.4;
@@ -348,36 +353,43 @@ function GeoEditor({geo,onChange}){
   const innerW=VW-2*PAD,x0=PAD,VH=AREA_H+2*PAD;
   const rects=[],syms=[];let yy=PAD;
   rows.forEach((row,ri)=>{const rh=(row.h||1)/totalH*AREA_H,cols=row.cols||1,ws=(row.w&&row.w.length===cols)?row.w:Array(cols).fill(1),wsum=ws.reduce((a,b)=>a+b,0)||cols,avail=innerW-(cols-1)*MULL;let cx=x0;
-    for(let c=0;c<cols;c++){const cw=ws[c]/wsum*avail,x=cx,y=yy,key=ri+":"+c,cell=g.cells[key]||{},isSel=sel===key;
+    for(let c=0;c<cols;c++){const cw=ws[c]/wsum*avail,x=cx,y=yy,key=ri+":"+c,cell=g.cells[key]||{},isSel=sel===key,vn=cell.vg?vgNr(cell.vg):null;
       rects.push(<rect key={"r"+key} x={x} y={y} width={cw} height={rh} fill={cell.art?C.acBg:C.sf2} stroke={isSel?C.ac:C.bd} strokeWidth={isSel?2.5:BAR} onClick={()=>setSel(key)} style={{cursor:"pointer"}}/>);
       syms.push(...openingSymbol(cell,x,y,cw,rh,key));
-      if(cell.art)syms.push(<text key={"t"+key} x={x+3} y={y+11} fill={C.tx2} fontSize="9" style={{pointerEvents:"none"}}>{FEN_AB[cell.art]||""}{cell.band?"·"+cell.band:""}</text>);
+      if(cell.art)syms.push(<text key={"a"+key} x={x+3} y={y+11} fill={C.tx2} fontSize="9" style={{pointerEvents:"none"}}>{FEN_AB[cell.art]||""}{cell.band?"·"+cell.band:""}</text>);
+      if(vn)syms.push(<text key={"v"+key} x={x+cw/2} y={y+rh-5} textAnchor="middle" fill={C.ac} fontSize="11" style={{pointerEvents:"none",fontWeight:800}}>V{vn}</text>);
       cx+=cw+MULL;}
     yy+=rh;});
   const seg=(val,arr,on)=><div style={{display:"flex",gap:2}}>{arr.map(n=><button key={n} style={{...$.btn,...$.bS,padding:"3px 7px",fontSize:11,...(val===n?$.bP:$.bO)}} onClick={()=>on(n)}>{n}</button>)}</div>;
   const sb={...$.btn,...$.bO,padding:"2px 8px",fontSize:13,minWidth:26};
   return <div>
-    <div style={{...$.lbl,marginBottom:4}}>Zeilen (oben → unten)</div>
-    {rows.map((row,ri)=><div key={ri} style={{display:"flex",alignItems:"center",gap:4,marginBottom:4,flexWrap:"wrap"}}>
-      <span style={{fontSize:11,color:C.tx2,width:22}}>Z{ri+1}</span>
-      <span style={{fontSize:10,color:C.tx3}}>Flg</span>{seg(row.cols||1,[1,2,3,4],n=>setCols(ri,n))}
-      <span style={{fontSize:10,color:C.tx3,marginLeft:4}}>Höhe</span>
-      <button style={sb} onClick={()=>setH(ri,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{row.h||1}</span><button style={sb} onClick={()=>setH(ri,1)}>+</button>
-      {rows.length>1&&<button style={{...sb,color:C.err,borderColor:C.err+"60"}} onClick={()=>delRow(ri)}>🗑</button>}
+    <div style={{...$.lbl,marginBottom:4}}>Fensteraufbau (oben → unten)</div>
+    {rows.map((row,ri)=><div key={ri} style={{border:`1px solid ${C.bd}`,borderRadius:8,padding:8,marginBottom:6}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+        <select style={{...$.sel,...$.selS,flex:1}} value={row.role||""} onChange={e=>setRole(ri,e.target.value)}><option value="">Feld {ri+1}</option>{ROW_ROLES.map(o=><option key={o}>{o}</option>)}</select>
+        {rows.length>1&&<button style={{...sb,color:C.err,borderColor:C.err+"60"}} onClick={()=>delRow(ri)}>🗑</button>}
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+        <span style={{fontSize:11,color:C.tx2}}>Flügel</span>{seg(row.cols||1,[1,2,3,4],n=>setCols(ri,n))}
+        <span style={{fontSize:11,color:C.tx2,marginLeft:4}}>Höhe-Anteil</span><button style={sb} onClick={()=>setH(ri,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{row.h||1}</span><button style={sb} onClick={()=>setH(ri,1)}>+</button>
+      </div>
     </div>)}
-    <div style={{display:"flex",gap:6,marginTop:2,marginBottom:6}}>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(true)}>↑ Zeile oben</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(false)}>↓ Zeile unten</button>
+    <div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Höhe-Anteil = relatives Höhenverhältnis der Felder (z.B. Oberlicht 1, Hauptfenster 3).</div>
+    <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(true,"Oberlicht")}>+ Oberlicht</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(false,"Brüstung")}>+ Brüstung</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(false,"")}>+ Feld</button>
     </div>
     <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",display:"block",touchAction:"manipulation",marginBottom:6}}>{rects}{syms}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={4} rx={4}/></svg>
     {sel!=null?(()=>{const pr=sel.split(":"),ri=+pr[0],ci=+pr[1],row=rows[ri]||{cols:1},cols=row.cols||1,cell=g.cells[sel]||{},showBand=cell.art==="Dreh"||cell.art==="Dreh-Kipp",curW=(row.w&&row.w[ci])||1;
       return <div style={{padding:8,background:C.sf2,borderRadius:8,marginBottom:6}}>
-        <div style={{fontSize:11,color:C.tx2,marginBottom:5}}>Feld Z{ri+1} · Spalte {ci+1}</div>
-        <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:(showBand||cols>1)?6:0}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...$.btn,...$.bS,padding:"4px 7px",fontSize:11,...((cell.art||"")===t?$.bP:$.bO)}} onClick={()=>setCell(sel,{art:t})}>{t||"leer"}</button>)}</div>
-        {showBand&&<div style={{display:"flex",gap:4,alignItems:"center",marginBottom:cols>1?6:0}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{[["L","Links"],["R","Rechts"]].map(([v,l])=><button key={v} style={{...$.btn,...$.bS,padding:"4px 9px",...(cell.band===v?$.bP:$.bO)}} onClick={()=>setCell(sel,{band:v})}>{l}</button>)}</div>}
-        {cols>1&&<div style={{display:"flex",gap:6,alignItems:"center"}}><span style={{fontSize:11,color:C.tx2}}>Spaltenbreite:</span><button style={sb} onClick={()=>setW(ri,ci,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{curW}</span><button style={sb} onClick={()=>setW(ri,ci,1)}>+</button></div>}
+        <div style={{fontSize:11,color:C.tx2,marginBottom:5}}>{row.role||("Feld "+(ri+1))} · Spalte {ci+1}</div>
+        <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:6}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...$.btn,...$.bS,padding:"4px 7px",fontSize:11,...((cell.art||"")===t?$.bP:$.bO)}} onClick={()=>setCell(sel,{art:t})}>{t||"leer"}</button>)}</div>
+        {showBand&&<div style={{display:"flex",gap:4,alignItems:"center",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{[["L","Links"],["R","Rechts"]].map(([v,l])=><button key={v} style={{...$.btn,...$.bS,padding:"4px 9px",...(cell.band===v?$.bP:$.bO)}} onClick={()=>setCell(sel,{band:v})}>{l}</button>)}</div>}
+        {cols>1&&<div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Spaltenbreite:</span><button style={sb} onClick={()=>setW(ri,ci,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{curW}</span><button style={sb} onClick={()=>setW(ri,ci,1)}>+</button></div>}
+        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}><span style={{fontSize:11,color:C.tx2}}>Verglasung:</span>{vgs.map(v=><button key={v.id} style={{...$.btn,...$.bS,padding:"4px 8px",...(cell.vg===v.id?$.bP:$.bO)}} onClick={()=>setCell(sel,{vg:v.id})}>V{v.nr}</button>)}{cell.vg&&<button style={{...$.btn,...$.bS,...$.bO,padding:"4px 8px"}} onClick={()=>setCell(sel,{vg:""})}>—</button>}{cell.vg&&onJump&&<button style={{...$.btn,...$.bS,...$.bP,padding:"4px 8px"}} onClick={()=>onJump(cell.vg)}>→ öffnen</button>}{!vgs.length&&<span style={{fontSize:10,color:C.tx3}}>keine Verglasungen angelegt</span>}</div>
       </div>;})()
-    :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Feld antippen → Öffnungsart &amp; Bandseite wählen</div>}
+    :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Feld antippen → Öffnungsart, Bandseite &amp; Verglasung wählen</div>}
     <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:10,color:C.tx2}}>{FEN_TYPEN.map(t=><span key={t}><b style={{color:C.tx}}>{FEN_AB[t]}</b> {t}</span>)}</div>
   </div>;
 }
@@ -571,7 +583,7 @@ function App(){
   const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgErf(f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
   const isA=k=>(proj?.activeFields||[]).includes(k);
   const fFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&d.t!=="geo"&&d.t!=="masse"&&isA(k));
-  const vFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&isA(k));
+  const vFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&k!=="stempel"&&isA(k));
   const hasZ=()=>proj?.zustandModus&&proj.zustandModus!=="Keine"&&isA("zustandRahmen");
   const getDef=(k,fenRec,vgRec)=>resolveDef(k,fenRec,vgRec,proj);
 
@@ -749,7 +761,7 @@ function App(){
       else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16}}>🪟 {f.nr}</span>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}</div>
         {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>)}</div>}
         {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
-        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)}/></div>}
+        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}}/></div>}
         {isA("rahmenmasse")&&<div style={{marginBottom:8}}><div style={$.cardT}>Rahmen-Abmessungen</div><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
