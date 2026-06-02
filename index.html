@@ -335,7 +335,7 @@ function openingSymbol(cell,x,y,w,h,key){
 }
 
 // Fenstergeometrie – Zeilen-Modell, Feld antippen → auswählen
-function GeoEditor({geo,onChange,verglasungen,onJump}){
+function GeoEditor({geo,onChange,verglasungen,onJump,onSyncVg}){
   const g=normalizeGeo(geo);
   const[sel,setSel]=useState(null);
   const rows=g.rows;
@@ -390,6 +390,7 @@ function GeoEditor({geo,onChange,verglasungen,onJump}){
         <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}><span style={{fontSize:11,color:C.tx2}}>Verglasung:</span>{vgs.map(v=><button key={v.id} style={{...$.btn,...$.bS,padding:"4px 8px",...(cell.vg===v.id?$.bP:$.bO)}} onClick={()=>setCell(sel,{vg:v.id})}>V{v.nr}</button>)}{cell.vg&&<button style={{...$.btn,...$.bS,...$.bO,padding:"4px 8px"}} onClick={()=>setCell(sel,{vg:""})}>—</button>}{cell.vg&&onJump&&<button style={{...$.btn,...$.bS,...$.bP,padding:"4px 8px"}} onClick={()=>onJump(cell.vg)}>→ öffnen</button>}{!vgs.length&&<span style={{fontSize:10,color:C.tx3}}>keine Verglasungen angelegt</span>}</div>
       </div>;})()
     :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Feld antippen → Öffnungsart, Bandseite &amp; Verglasung wählen</div>}
+    {onSyncVg&&(()=>{const fc=rows.reduce((s,r)=>s+(r.cols||1),0),lc=Object.values(g.cells||{}).filter(c=>c&&c.vg).length;return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,marginBottom:6,flexWrap:"wrap"}}><span style={{fontSize:10,color:(vgs.length!==fc)?C.warn:C.tx3}}>Verglasungen: {vgs.length} · Felder: {fc} · verknüpft: {lc}</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px"}} onClick={onSyncVg}>aus Geometrie übernehmen</button></div>;})()}
     <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:10,color:C.tx2}}>{FEN_TYPEN.map(t=><span key={t}><b style={{color:C.tx}}>{FEN_AB[t]}</b> {t}</span>)}</div>
   </div>;
 }
@@ -450,6 +451,7 @@ function App(){
   const[hasUnsaved,setHasUnsaved]=useState(false); // track unsaved numpad input
   const[showGas,setShowGas]=useState(false); // optionalen Gasfüllgrad-Numpad ein-/ausklappen
   const[globalTD,setGlobalTD]=useState(loadGlobalTD()); // globale thermische Standardwerte
+  const[dupQty,setDupQty]=useState(1); // Anzahl Kopien beim Raum-Duplizieren
 
   useEffect(()=>{dbAll().then(d=>{setProjects(d||[]);setLoading(false);}).catch(()=>setLoading(false));},[]);
   const flash=m=>{setToast(m);setTimeout(()=>setToast(null),2500);};
@@ -551,7 +553,11 @@ function App(){
   const addRoom=()=>{if(!fmR.raumnummer&&!fmR.raumId)return;mut(p=>{p.rooms.push({id:uid(),...fmR,fenster:[],photos:[]});});setFmR({geschoss:fmR.geschoss,raumnummer:"",raumId:""});setModal(null);flash("Raum +");};
   const delRoom=rId=>{mut(p=>{p.rooms=p.rooms.filter(r=>r.id!==rId);});if(room?.id===rId){setRoom(null);setView("survey");}};
 
-  const addFen=(rId,nr,va)=>{mut(p=>{const r=gR(p,rId);if(!r)return;if(p.modus==="fenster"){r.fenster.push({id:uid(),nr:nr||`F${(r.fenster.length||0)+1}`,verglasungen:Array.from({length:va||1},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),data:{},sources:{},photos:[],notizen:""});}else{r.fenster.push({id:uid(),nr:`V${(r.fenster.length||0)+1}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});}});};
+  const addFen=(rId,nr,va,count)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const N=Math.max(1,count|0||1);for(let k=0;k<N;k++){const base=(r.fenster.length||0)+1;if(p.modus==="fenster"){r.fenster.push({id:uid(),nr:(N===1&&nr)?nr:`F${base}`,verglasungen:Array.from({length:va||1},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),data:{},sources:{},photos:[],notizen:""});}else{r.fenster.push({id:uid(),nr:`V${base}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});}}});};
+  const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({id:uid(),nr:(f.verglasungen.length||0)+1,messungen:[],data:{},sources:{},photos:[],notizen:""});}});
+  const syncVgFromGeo=(rId,fId)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(!f)return;const g=f.geometrie?normalizeGeo(f.geometrie):null;if(!g)return;const pos=[];g.rows.forEach((row,ri)=>{for(let c=0;c<(row.cols||1);c++)pos.push(ri+":"+c);});if(!f.verglasungen)f.verglasungen=[];while(f.verglasungen.length<pos.length)f.verglasungen.push({id:uid(),nr:f.verglasungen.length+1,messungen:[],data:{},sources:{},photos:[],notizen:""});const cells={...g.cells};pos.forEach((k,i)=>{cells[k]={art:"",band:"",...(cells[k]||{}),vg:f.verglasungen[i].id};});f.geometrie={...g,cells};});flash("Aus Geometrie übernommen");};
+  const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];});if(f.geometrie&&f.geometrie.cells)Object.keys(f.geometrie.cells).forEach(k=>{const cl=f.geometrie.cells[k];if(cl.vg)cl.vg=map[cl.vg]||"";});});return c;};
+  const dupRoom=(rId,count)=>{mut(p=>{const idx=p.rooms.findIndex(x=>x.id===rId);if(idx<0)return;const r=p.rooms[idx];const N=Math.max(1,count|0||1);const taken=new Set(p.rooms.map(x=>x.raumnummer));const baseNm=r.raumnummer||r.raumId||"Raum";let n=2;for(let i=0;i<N;i++){const c=cloneRoomData(r);c.geschoss=r.geschoss;let nm;do{nm=`${baseNm} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.raumnummer=nm;p.rooms.splice(idx+1+i,0,c);}});flash("Raum dupliziert");};
   const quickAdd=(rId,n)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const s=(r.fenster.length||0)+1;for(let i=0;i<n;i++)r.fenster.push({id:uid(),nr:`V${s+i}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});});flash(`+${n}`);};
 
   // Delete Verglasung (in Vg mode = delete fenster entry, in Fen mode = remove from verglasungen array)
@@ -727,7 +733,7 @@ function App(){
   // ROOM
   if(view==="room"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);if(!rm){setView("survey");return null;}
     const rs=rSt(rm);const isV=p.modus==="verglasung";const ff=fFs();const vf=vFs();
-  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}</div><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div style={$.body}>
+  return <div style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}</div><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
     {/* Quick add with custom input */}
     {isV&&<div style={{...$.card,padding:10}}>
@@ -761,7 +767,7 @@ function App(){
       else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16}}>🪟 {f.nr}</span>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}</div>
         {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>)}</div>}
         {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
-        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}}/></div>}
+        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>}
         {isA("rahmenmasse")&&<div style={{marginBottom:8}}><div style={$.cardT}>Rahmen-Abmessungen</div><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
@@ -772,13 +778,20 @@ function App(){
             <span style={{color:C.tx3,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>›</span>
           </div>
         </div>;})}
+        <button style={{...$.btn,...$.bO,...$.bS,marginTop:2}} onClick={()=>addVgToFen(rm.id,f.id)}>+ Verglasung</button>
         <div style={{marginTop:6}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div></div>;
     })}
     {/* Add button */}
     {isV?<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{addFen(rm.id);flash("Verglasung +");}}>+ Verglasung hinzufügen</button>
-    :<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{setFmF({nr:`F${(rm.fenster?.length||0)+1}`,va:2});setModal("addF");}}>+ Fenster hinzufügen</button>}
+    :<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{setFmF({nr:`F${(rm.fenster?.length||0)+1}`,va:1,count:1});setModal("addF");}}>+ Fenster hinzufügen</button>}
   </div>
-    {modal==="addF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Fenster hinzufügen</div><div style={{marginBottom:8}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={fmF.nr} onChange={e=>setFmF({...fmF,nr:e.target.value})} autoFocus/></div><div style={{marginBottom:14}}><label style={$.lbl}>Verglasungen</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,6].map(n=><button key={n} style={{...$.btn,flex:1,...(fmF.va===n?$.bP:$.bO)}} onClick={()=>setFmF({...fmF,va:n})}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{addFen(rm.id,fmF.nr,fmF.va);setModal(null);flash("Fenster +");}}>Hinzufügen</button></div></div>}
+    {modal==="addF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Fenster hinzufügen</div>
+      <div style={{marginBottom:8}}><label style={$.lbl}>Anzahl identische Fenster</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,6].map(n=><button key={n} style={{...$.btn,flex:1,...((fmF.count||1)===n?$.bP:$.bO)}} onClick={()=>setFmF({...fmF,count:n})}>{n}</button>)}</div></div>
+      {(fmF.count||1)===1&&<div style={{marginBottom:8}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={fmF.nr} onChange={e=>setFmF({...fmF,nr:e.target.value})} autoFocus/></div>}
+      <div style={{marginBottom:6}}><label style={$.lbl}>Verglasungen (Start)</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,6].map(n=><button key={n} style={{...$.btn,flex:1,...((fmF.va||1)===n?$.bP:$.bO)}} onClick={()=>setFmF({...fmF,va:n})}>{n}</button>)}</div></div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:14}}>Verglasungszahl später pro Fenster mit +/− anpassbar oder „aus Geometrie übernehmen".</div>
+      <button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{addFen(rm.id,fmF.nr,fmF.va||1,fmF.count||1);setModal(null);flash((fmF.count||1)>1?`${fmF.count} Fenster +`:"Fenster +");}}>Hinzufügen</button></div></div>}
+    {modal==="dupR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Raum duplizieren</div><div style={{fontSize:12,color:C.tx2,marginBottom:12}}>Erzeugt Kopien dieses Raums mit Aufbau, Geometrie und Stammdaten – ohne Messungen und Fotos. Raumnummern danach anpassen.</div><div style={{marginBottom:14}}><label style={$.lbl}>Anzahl Kopien</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,10].map(n=><button key={n} style={{...$.btn,flex:1,...(dupQty===n?$.bP:$.bO)}} onClick={()=>setDupQty(n)}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{dupRoom(rm.id,dupQty);setModal(null);}}>Duplizieren</button></div></div>}
   {Toast}</div>;}
 
   // MEASURE
