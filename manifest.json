@@ -1,10 +1,10 @@
 {
-  "name": "FensterCheck – Gasfüllgrad-Messerfassung",
+  "name": "FensterCheck – Mobile Fenstererfassung",
   "short_name": "FensterCheck",
-  "description": "Mobile Erfassung von Gasfüllgrad-Messungen bei Gebäudebegehungen",
+  "description": "Mobile Erfassung von Fenstern bei Gebäudebegehungen (Geometrie, Verglasung, Zustand, Fotos)",
   "start_url": "./index.html",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#0b0f14",
   "theme_color": "#4da3ff",
   "icons": [

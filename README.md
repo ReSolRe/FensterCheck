@@ -1,6 +1,6 @@
-# FensterCheck – Mobile Fenster-Messerfassung
+# FensterCheck – Mobile Fenstererfassung
 
-Mobile PWA zur systematischen Erfassung von Gasfüllgrad-Messungen und Fensterdaten bei Gebäudebegehungen.
+Mobile PWA zur systematischen Erfassung von Fenstern bei Gebäudebegehungen: Geometrie, Rahmen, Verglasung, thermische Kennwerte, Zustand und Fotos (optional Gasfüllgrad-Messungen).
 
 **Live:** https://resolre.github.io/FensterCheck/
 
@@ -11,6 +11,7 @@ FensterCheck/
 ├── index.html      ← Hauptanwendung (komplett eigenständig)
 ├── sw.js           ← Service Worker (Offline-Caching)
 ├── manifest.json   ← PWA-Manifest (App-Installation)
+├── lib/            ← Lokale Bibliotheken (React, Babel, SheetJS – kein CDN)
 └── README.md       ← Diese Anleitung
 ```
 
@@ -55,7 +56,10 @@ zwischengespeichert. Die App funktioniert anschliessend vollständig offline:
 - Export (CSV, Excel, JSON) offline möglich ✓
 
 **Wichtig:** Beim ersten Aufruf muss eine Internetverbindung bestehen,
-damit die externen Bibliotheken (React, SheetJS) geladen und gecacht werden.
+damit die App und ihre Bibliotheken geladen und gecacht werden. Alle
+Bibliotheken werden lokal mitgeliefert (kein CDN) – danach läuft alles offline.
+App-Updates werden beim Öffnen im Hintergrund geladen und sind beim
+nächsten Öffnen aktiv.
 
 ## Datensicherheit
 
@@ -89,4 +93,4 @@ damit die externen Bibliotheken (React, SheetJS) geladen und gecacht werden.
 
 **Excel-Export funktioniert nicht:**
 → SheetJS-Bibliothek nicht geladen. Einmal mit Internet öffnen.
-  Alternativ CSV-Export verwenden (keine externe Abhängigkeit).
+  Alternativ CSV-Export verwenden.

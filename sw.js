@@ -1,12 +1,12 @@
-const CACHE_NAME = 'fenstercheck-v15';
+const CACHE_NAME = 'fenstercheck-v16';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
-  'https://unpkg.com/react@18/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone/babel.min.js',
-  'https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js'
+  './lib/react.production.min.js',
+  './lib/react-dom.production.min.js',
+  './lib/babel.min.js',
+  './lib/xlsx.full.min.js'
 ];
 
 self.addEventListener('install', event => {
@@ -24,6 +24,27 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
+  // App-Shell (Navigationen): sofort aus dem Cache antworten, im Hintergrund
+  // aktualisieren – neue Versionen erscheinen beim nächsten Öffnen, ohne dass
+  // ein Cache-Bump nötig ist. Offline funktioniert unverändert.
+  if (event.request.mode === 'navigate') {
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      const cached = await cache.match('./index.html') || await cache.match('./');
+      const network = fetch(event.request).then(res => {
+        if (res && res.status === 200) {
+          cache.put('./index.html', res.clone());
+          cache.put('./', res.clone());
+        }
+        return res;
+      }).catch(() => null);
+      if (cached) { network.catch(() => {}); return cached; }
+      const fresh = await network;
+      return fresh || Response.error();
+    })());
+    return;
+  }
+  // Übrige Anfragen (Bibliotheken etc.): Cache-first.
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
