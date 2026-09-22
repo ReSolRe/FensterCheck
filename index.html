@@ -49,7 +49,8 @@ const DB_NAME="fenstercheck_db",STORE="projects";
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 const FLOORS=["UG3","UG2","UG1","EG","OG1","OG2","OG3","OG4","OG5","OG6","OG7","OG8","OG9","OG10","DG"];
 const ORIENTATIONS=["N","NO","O","SO","S","SW","W","NW"];
-const FEN_TYPEN=["Dreh","Kipp","Dreh-Kipp","Fest","Schiebe","Klapp","Sonstig"];
+const FEN_TYPEN=["Dreh","Kipp","Dreh-Kipp","Fest","Schiebe","Klapp","Sonstig"];   // Öffnungsarten je Feld der Geometrie
+const FEN_BAUART=["Einfachfenster","Verbundfenster","Kastenfenster","Fenstertür","Festverglasung","Pfosten-Riegel","Dachfenster","Sonstig"];   // Bauart auf Fensterebene
 const FRAME_MAT=["Holz","Holz-Metall","Kunststoff","Kunststoff-Metall","Metall","Unbekannt"];
 const GLAZ_TYPES=["2-fach IV","2-fach WSV","3-fach WSV","Unbekannt"];
 const LOWE_OPT=["Ja","Nein","Unbekannt"];
@@ -215,7 +216,7 @@ const DEFAULTABLE_FIELDS = [
 
 const FIELDS={
   fassade:{label:"Fassadenorientierung",g:"f",t:"select",o:ORIENTATIONS},
-  fensterTyp:{label:"Fenstertyp",g:"f",t:"select",o:FEN_TYPEN},
+  fensterBauart:{label:"Fensterbauart",g:"f",t:"select",o:FEN_BAUART},
   rahmenMaterial:{label:"Rahmenmaterial",g:"f",t:"select",o:FRAME_MAT},
   rahmenProfiltiefe:{label:"Rahmenprofiltiefe [mm]",g:"f",t:"number",src:true},
   baujahr:{label:"Baujahr",g:"f",t:"number",src:true},
@@ -250,7 +251,7 @@ const FIELDS={
 
 const PRESETS={
   schnell:{name:"Schnell",desc:"Nur Verglasungstyp + Fotos",fields:["verglasungsTyp"]},
-  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterTyp","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau","glasDichtung","glasDichtungAussen","psiWert"]},
+  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterBauart","geometrie","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau","glasDichtung","glasDichtungAussen","psiWert"]},
   voll:{name:"Voll",desc:"Alle Felder",fields:Object.keys(FIELDS)},
 };
 
@@ -333,9 +334,22 @@ async function readZip(file){const tl=Math.min(file.size,65557);const tail=new D
   if(packed){const cfb=XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()),{type:"array"});out.clear();cfb.FullPaths.forEach((fp,i)=>{const e=cfb.FileIndex[i];if(e.type===2&&e.content&&!/Sh33tJ5/.test(fp))out.set(fp.replace(/^Root Entry\//,""),new Blob([e.content]));});}
   return out;}
 // Projekt-Migration (beim Start und beim Import), liefert true bei Änderung:
+// – altes Fensterfeld „Fenstertyp" (eine Öffnungsart je Fenster): ohne Geometrie → Ein-Feld-Geometrie mit dieser Öffnungsart,
+//   sonst (Geometrie vorhanden oder „Sonstig") → Bemerkung „Fenstertyp (alt): …"; Feld, Quelle und Standardwert entfernen, activeFields umschreiben
 // – Messwerte ohne id erhalten eine (Messfotos verweisen per msId darauf)
-function migrateProj(p){if(!p||!Array.isArray(p.rooms))return false;let ch=false;
-  p.rooms.forEach(r=>(r.fenster||[]).forEach(f=>{(f.verglasungen||[]).forEach(v=>(v.messungen||[]).forEach(m=>{if(m&&!m.id){m.id=uid();ch=true;}}));}));
+const GEO_ARTEN=["Dreh","Kipp","Dreh-Kipp","Fest","Schiebe","Klapp"];
+function migrateProj(p){if(!p||!Array.isArray(p.rooms))return false;let ch=false,geoNeu=false;
+  const note=(f,txt)=>{const n=f.notizen||"";if(n.includes(txt))return;f.notizen=n?n+"\n"+txt:txt;ch=true;};
+  p.rooms.forEach(r=>(r.fenster||[]).forEach(f=>{
+    if(f.data&&"fensterTyp" in f.data){const alt=f.data.fensterTyp;
+      if(alt){if(GEO_ARTEN.includes(alt)&&!f.geometrie){f.geometrie=geoFromArt(alt);geoNeu=true;}else note(f,"Fenstertyp (alt): "+alt);}
+      delete f.data.fensterTyp;ch=true;}
+    if(f.sources&&"fensterTyp" in f.sources){delete f.sources.fensterTyp;ch=true;}
+    (f.verglasungen||[]).forEach(v=>(v.messungen||[]).forEach(m=>{if(m&&!m.id){m.id=uid();ch=true;}}));}));
+  const af=p.activeFields||[];
+  if(af.includes("fensterTyp")){p.activeFields=af.map(k=>k==="fensterTyp"?"fensterBauart":k).filter((k,i,a)=>a.indexOf(k)===i);ch=true;}
+  if(geoNeu&&!(p.activeFields||[]).includes("geometrie")){p.activeFields=[...(p.activeFields||[]),"geometrie"];ch=true;}
+  if(p.defaults&&"fensterTyp" in p.defaults){delete p.defaults.fensterTyp;ch=true;}
   return ch;}
 // Projektdatei (ZIP oder JSON, auch alte JSON-Backups mit eingebetteten Fotos) lesen; Fotos landen mit neuen IDs im Store
 async function readProjectFile(file){const head=await file.slice(0,2).text();let d,files=null;
