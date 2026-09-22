@@ -409,14 +409,14 @@ function buildExport(p){
   if(zOn)fHead.push("Zustand Rahmen");
   if(geoOn)fHead.push("Geometrie","Felder","Flügel beweglich");
   if(masseOn)fHead.push("Rahmenmaße i/a [mm]");
-  fHead.push("Notizen");
+  fHead.push("Bemerkung Fenster","Bemerkung Verglasung");
   const fCells=(fen,vg)=>{const row=[];
     vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src&&p.showSrc)row.push(vg.sources?.[k]||"");});
     ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src&&p.showSrc)row.push(fen.sources?.[k]||"");});
     if(zOn)row.push(fen.zustandRahmen||"");
     if(geoOn){const g=fen.geometrie;row.push(g?geoSummary(g):"",g?geoCellCount(g):"",g?geoMovableCount(g):"");}
     if(masseOn)row.push(masseSummary(fen.rahmenmasse));
-    row.push(vg.notizen||"");return row;};
+    row.push(fen.notizen||"",vg.notizen||"");return row;};
   const loc=(room,fen,vg)=>[room.trakt||"",room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||""];
 
   // Foto-Dateinamen einmal berechnen; Messfotos je Messwert-ID für das Blatt "Messungen"
@@ -514,7 +514,7 @@ const $={
 // Components
 // Entprelltes Text-/Zahlenfeld: schreibt erst nach Tipppause (bzw. bei Blur/Unmount)
 // in den Projekt-State – sonst löst jeder Tastendruck Klon+IndexedDB-Write aus.
-function DInp({value,onCommit,style,type,step,placeholder}){
+function DInp({value,onCommit,style,type,step,placeholder,multiline,rows}){
   const[loc,setLoc]=useState(value||"");
   const t=useRef(null),lv=useRef(value||""),locR=useRef(loc),cbR=useRef(onCommit);
   locR.current=loc;cbR.current=onCommit;
@@ -522,6 +522,7 @@ function DInp({value,onCommit,style,type,step,placeholder}){
   const fire=val=>{if(t.current){clearTimeout(t.current);t.current=null;}if(val!==lv.current){lv.current=val;cbR.current(val);}};
   const change=val=>{setLoc(val);if(t.current)clearTimeout(t.current);t.current=setTimeout(()=>fire(val),600);};
   useEffect(()=>()=>{if(t.current){clearTimeout(t.current);if(locR.current!==lv.current){lv.current=locR.current;cbR.current(locR.current);}}},[]);
+  if(multiline)return <textarea style={{...style,resize:"vertical",lineHeight:1.4,fontFamily:"inherit",height:"auto"}} rows={rows||2} value={loc} onChange={e=>change(e.target.value)} onBlur={()=>fire(loc)} placeholder={placeholder}/>;
   return <input style={style} type={type||"text"} step={step} value={loc} onChange={e=>change(e.target.value)} onBlur={()=>fire(loc)} placeholder={placeholder}/>;
 }
 function SrcPick({value:v,onChange:ch}){const cs={M:C.sM,H:C.sH,P:C.sP};return <div style={{display:"flex",gap:3}}>{DSRC.map(s=><div key={s} style={$.srcB(v===s,cs[s])} onClick={()=>ch(v===s?"":s)}>{s}</div>)}</div>;}
@@ -954,6 +955,7 @@ function App(){
   const setFV=(rId,fId,vId,k,val)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.data)t.data={};t.data[k]=val;}});};
   const setFS=(rId,fId,vId,k,s)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.sources)t.sources={};t.sources[k]=s;}});};
   const setZu=(rId,fId,v)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.zustandRahmen=v;});};
+  const setNotiz=(rId,fId,vId,txt)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t)t.notizen=txt;});};   // Bemerkung an Fenster (vId leer) oder Verglasung
   const setGeo=(rId,fId,g)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.geometrie=g;});};
   const setMasse=(rId,fId,m)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.rahmenmasse=m;});};
   const addPh=(rId,fId,vId,ph)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t){if(!t.photos)t.photos=[];t.photos.push(ph);}});};
@@ -1215,7 +1217,8 @@ function App(){
           </div>
         </div>;})}
         <button style={{...$.btn,...$.bO,...$.bS,marginTop:2}} onClick={()=>addVgToFen(rm.id,f.id)}>+ Verglasung</button>
-        <div style={{marginTop:6}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div></div>;
+        <div style={{marginTop:6}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
+        <div style={{marginTop:8}}><label style={$.lbl}>Bemerkungen</label><DInp multiline style={{...$.inp,...$.inpS}} value={f.notizen||""} onCommit={t=>setNotiz(rm.id,f.id,null,t)} placeholder="Auffälligkeiten, Hinweise zum Fenster…"/></div></div>;
     })}
     {/* Add button */}
     {isV?<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{addFen(rm.id);flash("Verglasung +");}}>+ Verglasung hinzufügen</button>
@@ -1287,6 +1290,7 @@ function App(){
           {orphans.length>0&&<div style={{marginTop:12}}><div style={{...$.cardT,marginBottom:4}}>Messfotos ohne Wert ({orphans.length})</div><ThumbRow photos={orphans} title="Messfoto ohne Wert" onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>}
         </div>}
       </div>;})()}
+    <div style={$.card}><div style={$.cardT}>Bemerkungen</div><DInp multiline style={{...$.inp,...$.inpS}} value={v.notizen||""} onCommit={t=>setNotiz(rm.id,f.id,v.id,t)} placeholder="Auffälligkeiten, Hinweise zur Verglasung…"/></div>
     {/* Navigation */}
     <div style={{display:"flex",gap:6,marginTop:8}}>
       {idx>0&&<button style={{...$.btn,...$.bO,flex:1}} onClick={()=>navTo(idx-1)}>← Vorherige</button>}
