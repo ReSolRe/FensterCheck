@@ -883,6 +883,15 @@ function App(){
     <div style={$.card}><div style={$.cardT}>Daten & Datenschutz</div>
       <div style={{fontSize:13,lineHeight:1.5}}>Alle Daten bleiben <b>lokal auf dem Gerät</b> (IndexedDB/localStorage); es findet <b>keine Übertragung an einen Server</b> statt. Bitte regelmässig eine ZIP-Sicherung erstellen – beim Löschen der Browserdaten gehen die Erfassungen sonst verloren. Auf dem iPhone die App zum Home-Bildschirm hinzufügen, damit Safari die Daten nicht nach 7 Tagen ohne Nutzung entfernt. Die App ist für Suchmaschinen ausgeblendet (noindex) und nur per Link erreichbar.</div>
     </div>
+    <div style={$.card}><div style={$.cardT}>Installation & Hilfe</div>
+      <div style={{fontSize:13,lineHeight:1.55}}>
+        <b>Android (Chrome):</b> Menü ⋮ → „App installieren" bzw. „Zum Startbildschirm hinzufügen".<br/>
+        <b>iPhone/iPad (Safari, nicht Chrome):</b> Teilen ⬆ → „Zum Home-Bildschirm" → „Hinzufügen".<br/>
+        <b>Offline:</b> Nach dem ersten Aufruf mit Internet läuft die App vollständig offline (Erfassen, Fotos, Export). Updates werden beim Öffnen im Hintergrund geladen und sind beim nächsten Öffnen aktiv.<br/>
+        <b>Mehrere Geräte:</b> ZIP-Sicherung (oder „Nur Daten (JSON)") per AirDrop/E-Mail teilen und auf dem anderen Gerät unter Einrichtung → „Räume zusammenführen" importieren.<br/>
+        <b>Fehlerbehebung:</b> Daten verschwunden → Browserdaten wurden gelöscht, Sicherung importieren. Fotos werden nicht gespeichert → Kamerazugriff im Browser erlauben. Excel-Export geht nicht → einmal mit Internet öffnen oder CSV verwenden.
+      </div>
+    </div>
     <div style={$.card}><div style={$.cardT}>Impressum</div>
       <div style={{fontSize:13,lineHeight:1.5}}>Fachhochschule Nordwestschweiz (FHNW)<br/>Institut für Energie am Bau (INEB)<br/>Kontakt: <a href="mailto:gregor.steinke@fhnw.ch" style={{color:C.ac}}>gregor.steinke@fhnw.ch</a></div>
     </div>
