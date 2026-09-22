@@ -69,7 +69,7 @@ const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
 const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
 const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
 const ROW_ROLES=["Hauptfenster","Oberlicht","Brüstung","Seitenteil","Zwischenfeld"];
-const APP_VERSION="v17 · September 2026";
+const APP_VERSION="v18 · September 2026";
 const APP_REPO="https://github.com/ReSolRe/FensterCheck";
 
 // Editierbare thermische Standardwerte (global + Projekt-Override)
@@ -189,7 +189,7 @@ const phDel=ids=>ids&&ids.length?idb(PSTORE,"readwrite",s=>{ids.forEach(id=>s.de
 const phKeys=()=>idb(PSTORE,"readonly",s=>s.getAllKeys());
 
 // Fotos: Vollbild (max. PH_MAX px, JPEG) + Vorschaubild als Blobs im photos-Store.
-// Im Projekt steht nur {id,zeit,w,h,kb,isStempel?}. Alte Fotos haben noch "data" (DataURL) und werden migriert.
+// Im Projekt steht nur {id,zeit,w,h,kb,isStempel?,ms?,msId?} (ms/msId: Messfoto zu einem Messwert). Alte Fotos haben noch "data" (DataURL) und werden migriert.
 const PH_MAX=1920,PH_Q=0.82,TH_MAX=320,TH_Q=0.7;
 function loadImg(src){return new Promise((res,rej)=>{const img=new Image();const isB=src instanceof Blob;const u=isB?URL.createObjectURL(src):src;
   img.onload=()=>{if(isB)URL.revokeObjectURL(u);res(img);};img.onerror=()=>{if(isB)URL.revokeObjectURL(u);rej(new Error("Bild konnte nicht gelesen werden"));};img.src=u;});}
@@ -222,7 +222,10 @@ const fnSafe=s=>String(s||"").trim().replace(/[\\/:*?"<>|]+/g,"-").replace(/\s+/
 function photoEntries(p){const out=[];let n=0;sortedRooms(p).forEach(room=>{const base=(room.trakt?fnSafe(room.trakt)+"_":"")+(fnSafe(room.geschoss)||"x")+"_"+(fnSafe(room.raumnummer||room.raumId)||"Raum");
   (room.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Raum",room,fen:null,vg:null,typ:"Raum",name:`${base}_Raum_${n}.jpg`});});
   (room.fenster||[]).forEach(fen=>{(fen.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Fenster",room,fen,vg:null,typ:"Fenster",name:`${base}_${fnSafe(fen.nr)}_${n}.jpg`});});
-    (fen.verglasungen||[]).forEach(vg=>{(vg.photos||[]).forEach(ph=>{n++;const t=ph.isStempel?"Stempel":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,name:`${base}_${fnSafe(fen.nr)}_V${vg.nr}_${t}_${n}.jpg`});});});});});return out;}
+    (fen.verglasungen||[]).forEach(vg=>{(vg.photos||[]).forEach(ph=>{n++;const fv=`${base}_${fnSafe(fen.nr)}_V${vg.nr}`;
+      if(ph.ms&&MS_TYPES[ph.ms]){const T=MS_TYPES[ph.ms],m=(vg.messungen||[]).find(x=>x.id===ph.msId)||null; // Messfoto: Kurzname + Wert im Dateinamen, ohne Einheit („W/m²K" enthält „/")
+        out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:"Messung "+T.label,ms:ph.ms,msId:ph.msId||"",wert:m?msLabel(m):"",name:`${fv}_Mess-${T.short}${m?"-"+fnSafe(String(m.wert)):""}_${n}.jpg`});}
+      else{const t=ph.isStempel?"Stempel":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,ms:"",msId:"",wert:"",name:`${fv}_${t}_${n}.jpg`});}});});});});return out;}
 
 // Minimaler ZIP-Writer (unkomprimiert): Fotos werden als Blob-Referenzen eingebunden statt in den Speicher kopiert
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
@@ -245,13 +248,18 @@ async function readZip(file){const tl=Math.min(file.size,65557);const tail=new D
     const lh=new DataView(await file.slice(lo,lo+30).arrayBuffer());const st=lo+30+lh.getUint16(26,true)+lh.getUint16(28,true);out.set(name,file.slice(st,st+csz));}
   if(packed){const cfb=XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()),{type:"array"});out.clear();cfb.FullPaths.forEach((fp,i)=>{const e=cfb.FileIndex[i];if(e.type===2&&e.content&&!/Sh33tJ5/.test(fp))out.set(fp.replace(/^Root Entry\//,""),new Blob([e.content]));});}
   return out;}
+// Projekt-Migration (beim Start und beim Import), liefert true bei Änderung:
+// – Messwerte ohne id erhalten eine (Messfotos verweisen per msId darauf)
+function migrateProj(p){if(!p||!Array.isArray(p.rooms))return false;let ch=false;
+  p.rooms.forEach(r=>(r.fenster||[]).forEach(f=>{(f.verglasungen||[]).forEach(v=>(v.messungen||[]).forEach(m=>{if(m&&!m.id){m.id=uid();ch=true;}}));}));
+  return ch;}
 // Projektdatei (ZIP oder JSON, auch alte JSON-Backups mit eingebetteten Fotos) lesen; Fotos landen mit neuen IDs im Store
 async function readProjectFile(file){const head=await file.slice(0,2).text();let d,files=null;
   if(head==="PK"){files=await readZip(file);const jf=[...files.keys()].find(k=>/\.json$/i.test(k));if(!jf)throw new Error("ZIP enthält keine Projektdaten");d=JSON.parse(await files.get(jf).text());}
   else d=JSON.parse(await file.text());
   if(!d||!d.id||!Array.isArray(d.rooms))throw new Error("keine FensterCheck-Projektdatei");
   for(const o of photoLists(d)){const out=[];for(const ph of o.photos){try{if(ph.data)out.push(await storeExistingPhoto(ph,ph.data));else if(ph.file&&files&&files.get(ph.file))out.push(await storeExistingPhoto(ph,files.get(ph.file)));}catch(e){}}o.photos=out;}
-  delete d._format;return d;}
+  migrateProj(d);delete d._format;return d;}
 function download(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);}
 
 // Messungen je Verglasung: mehrere Werte je Messart. Alte Einträge ohne "typ" sind Gasfüllgrad.
@@ -264,6 +272,9 @@ const MS_KEYS=Object.keys(MS_TYPES);
 const msTyp=m=>(m&&m.typ&&MS_TYPES[m.typ])?m.typ:"gas";
 const msOf=(v,t)=>((v&&v.messungen)||[]).filter(m=>msTyp(m)===t);
 const fmtMs=m=>m?`${m.wert} ${MS_TYPES[msTyp(m)].unit}`:"";
+const msLabel=m=>m?`${MS_TYPES[msTyp(m)].label} ${m.wert} ${MS_TYPES[msTyp(m)].unit}`:"";   // „Gasfüllgrad 92 %" – Titel im Betrachter und Export
+const msPhotos=(v,mId)=>mId?((v&&v.photos)||[]).filter(p=>p.msId===mId):[];             // Messfotos eines Messwerts
+const msOrphans=v=>{const ids=new Set(((v&&v.messungen)||[]).map(m=>m.id));return ((v&&v.photos)||[]).filter(p=>p.ms&&!ids.has(p.msId));}; // Messfotos ohne passenden Messwert
 function msStats(list){const w=list.map(m=>m.wert).filter(x=>typeof x==="number"&&!isNaN(x));if(!w.length)return null;const s=[...w].sort((a,b)=>a-b);const r=x=>Math.round(x*100)/100;
   return {n:w.length,avg:r(w.reduce((a,b)=>a+b,0)/w.length),min:s[0],max:s[s.length-1],med:r(s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2)};}
 // Eine Verglasung gilt als "erfasst", wenn sie (oder ihr Fenster) dokumentiert ist – Messung, Foto, Daten oder Zustand.
@@ -310,18 +321,20 @@ function buildExport(p){
     row.push(vg.notizen||"");return row;};
   const loc=(room,fen,vg)=>[room.trakt||"",room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||""];
 
+  // Foto-Dateinamen einmal berechnen; Messfotos je Messwert-ID für das Blatt "Messungen"
+  const pes=photoEntries(p);const msFiles={};pes.forEach(e=>{if(e.msId)(msFiles[e.msId]=msFiles[e.msId]||[]).push("fotos/"+e.name);});
   // Blatt "Verglasungen": eine Zeile je Verglasung, Kennzahlen je Messart
   const vHead=["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Erfasst"];
   MS_KEYS.forEach(t=>{const T=MS_TYPES[t];vHead.push(`${T.label} Anzahl`,`${T.label} Ø [${T.unit}]`,`${T.label} min [${T.unit}]`,`${T.label} max [${T.unit}]`);});
   const vr=[[...vHead,...fHead]];
   // Blatt "Messungen": eine Zeile je Messwert (Verglasungen ohne Messung: eine Zeile ohne Wert)
-  const mr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Messart","Messwert","Einheit","Messung-Nr","Zeitstempel","Datum","Uhrzeit",...fHead]];
+  const mr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Messart","Messwert","Einheit","Messung-Nr","Zeitstempel","Datum","Uhrzeit","Fotos",...fHead]];
   rooms.forEach(room=>{(room.fenster||[]).forEach(fen=>{(fen.verglasungen||[]).forEach(vg=>{
     const L=loc(room,fen,vg),fc=fCells(fen,vg),ms=vg.messungen||[];
     const vrow=[...L,vgErf(fen,vg)?"ja":"nein"];MS_KEYS.forEach(t=>{const st=msStats(msOf(vg,t));vrow.push(st?st.n:"",st?st.avg:"",st?st.min:"",st?st.max:"");});vr.push([...vrow,...fc]);
-    if(!ms.length){mr.push([...L,"","","","","","","",...fc]);return;}
+    if(!ms.length){mr.push([...L,"","","","","","","","",...fc]);return;}
     const cnt={};ms.forEach(m=>{const t=msTyp(m),T=MS_TYPES[t];cnt[t]=(cnt[t]||0)+1;const z=new Date(m.zeit),ok=!isNaN(z);
-      mr.push([...L,T.label,m.wert,T.unit,cnt[t],m.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"",...fc]);});
+      mr.push([...L,T.label,m.wert,T.unit,cnt[t],m.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"",(msFiles[m.id]||[]).join(", "),...fc]);});
   });});});
 
   // Blatt "Zusammenfassung" je Raum
@@ -333,8 +346,8 @@ function buildExport(p){
   });
 
   // Blatt "Fotoverzeichnis" – Dateinamen entsprechen dem ZIP-Export (Ordner "fotos")
-  const fr=[["Nr","Ebene","Gebäudeteil","Geschoss","Raumnummer","Fenster","Verglasung","Typ","Zeitstempel","Datei im ZIP"]];
-  photoEntries(p).forEach(e=>fr.push([e.n,e.ebene,e.room.trakt||"",e.room.geschoss||"",e.room.raumnummer||"",e.fen?e.fen.nr:"",e.vg?e.vg.nr:"",e.typ,e.ph.zeit||"","fotos/"+e.name]));
+  const fr=[["Nr","Ebene","Gebäudeteil","Geschoss","Raumnummer","Fenster","Verglasung","Typ","Messwert","Zeitstempel","Datei im ZIP"]];
+  pes.forEach(e=>fr.push([e.n,e.ebene,e.room.trakt||"",e.room.geschoss||"",e.room.raumnummer||"",e.fen?e.fen.nr:"",e.vg?e.vg.nr:"",e.typ,e.wert||"",e.ph.zeit||"","fotos/"+e.name]));
   return{ov,mr,vr,zr,fr};
 }
 
@@ -472,13 +485,20 @@ function PhotoViewer({photos,start,title,onClose,onDel}){
     <div style={{textAlign:"center",fontSize:11,opacity:0.6,padding:"8px 0",paddingBottom:"max(8px, env(safe-area-inset-bottom))"}}>{zoom?"Ziehen zum Verschieben · Tippen zum Verkleinern":"Tippen = Originalgröße"+(n>1?" · Wischen zum Blättern":"")}</div>
   </div>,document.body);
 }
-function Photos({photos:ps,onAdd,onDel,label:l}){
-  const camRef=useRef(),galRef=useRef();const[vi,setVi]=useState(null);const[busy,setBusy]=useState(0);
-  // Nacheinander verarbeiten: Kamerafotos sind im Speicher groß (12 MP ≈ 48 MB entpackt)
+// Kamera-/Galerie-Knöpfe mit versteckten Datei-Eingaben; verkleinert, speichert und meldet jedes Foto einzeln über onAdd.
+// Nacheinander verarbeiten: Kamerafotos sind im Speicher groß (12 MP ≈ 48 MB entpackt)
+function PhotoBtn({onAdd,gallery,small}){const camRef=useRef(),galRef=useRef();const[busy,setBusy]=useState(0);
   const h=async e=>{const files=[...(e.target.files||[])];e.target.value="";if(!files.length)return;setBusy(files.length);let fail=0;
     for(const f of files){try{onAdd(await storeNewPhoto(f));}catch(err){console.error(err);fail++;}setBusy(b=>Math.max(0,b-1));}
     if(fail)alert(`${fail} Foto(s) konnten nicht gespeichert werden (Speicher voll oder Bildformat nicht lesbar).`);};
-  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length}){busy>0&&<span style={{color:C.warn,fontWeight:400}}> · ⏳ {busy} wird gespeichert…</span>}</span><div style={{display:"flex",gap:5}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>camRef.current?.click()}>📷</button><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>galRef.current?.click()}>🖼️</button></div><input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/><input ref={galRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={h}/></div>
+  const bs={...$.btn,...$.bO,...$.bS,padding:small?"4px 8px":"5px 10px"};
+  return <span style={{display:"inline-flex",gap:5,alignItems:"center"}}>{busy>0&&<span style={{fontSize:11,color:C.warn}}>⏳{busy}</span>}<button style={bs} title="Kamera" onClick={()=>camRef.current?.click()}>📷</button>{gallery&&<button style={bs} title="Galerie" onClick={()=>galRef.current?.click()}>🖼️</button>}<input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/>{gallery&&<input ref={galRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={h}/>}</span>;}
+// Kleine Vorschau-Reihe (z.B. Messfotos unter einem Messwert): Tippen öffnet den Betrachter, Löschen dort über 🗑
+function ThumbRow({photos:ps,title,onDel,size}){const[vi,setVi]=useState(null);if(!ps.length)return null;const sz=size||44;
+  return <div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:4}}>{ps.map((p,i)=><div key={p.id} style={{width:sz,height:sz}}><Thumb ph={p} onClick={()=>setVi(i)}/></div>)}
+    {vi!=null&&<PhotoViewer photos={ps} start={vi} title={title} onClose={()=>setVi(null)} onDel={onDel}/>}</div>;}
+function Photos({photos:ps,onAdd,onDel,label:l}){const[vi,setVi]=useState(null);
+  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length})</span><PhotoBtn onAdd={onAdd} gallery/></div>
     {ps.length>0&&<div style={$.phG}>{ps.map((p,i)=><div key={p.id} style={{position:"relative"}}><Thumb ph={p} onClick={()=>setVi(i)}/><div onClick={()=>{if(confirm("Foto löschen?"))onDel(p.id);}} style={{position:"absolute",top:2,right:2,width:20,height:20,borderRadius:10,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,cursor:"pointer"}}>×</div></div>)}</div>}
     {vi!=null&&ps.length>0&&<PhotoViewer photos={ps} start={vi} title={l||"Fotos"} onClose={()=>setVi(null)} onDel={onDel}/>}
   </div>;
@@ -663,6 +683,7 @@ function App(){
   useEffect(()=>{(async()=>{try{
     const d=(await dbAll())||[];const todo=d.filter(p=>legacyCount(p)>0);const total=todo.reduce((s,p)=>s+legacyCount(p),0);let done=0;
     for(const p of todo){await migratePhotos(p,()=>{done++;setBootMsg(`Fotos werden umgestellt… ${done}/${total}`);});await dbPut(p);}
+    for(const p of d){if(migrateProj(p))await dbPut(p);} // Datenmodell nachziehen (z.B. Messwert-IDs)
     await gcPhotos(d);setProjects(d);setLoading(false);
   }catch(e){console.error(e);setBootErr(e&&e.message||String(e));}
     try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist();}catch(e){}})();},[]);
@@ -818,8 +839,10 @@ function App(){
 
   const addMs=(rId,fId,vId,typ,val)=>{const T=MS_TYPES[typ]||MS_TYPES.gas;const w=parseFloat(String(val).replace(",","."));if(isNaN(w)){flash("Ungültiger Wert");return false;}
     if(w<T.min||w>T.max){if(!confirm(`${w} ${T.unit} liegt außerhalb des üblichen Bereichs für ${T.label} (${T.min} bis ${T.max} ${T.unit}). Trotzdem speichern?`))return false;}
-    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v){if(!v.messungen)v.messungen=[];v.messungen.push({typ,wert:w,zeit:new Date().toISOString()});}});flash(`${T.label} ${w} ${T.unit} ✓`);return true;};
-  const delMs=(rId,fId,vId,mi)=>{mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v)v.messungen.splice(mi,1);});};
+    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v){if(!v.messungen)v.messungen=[];v.messungen.push({id:uid(),typ,wert:w,zeit:new Date().toISOString()});}});flash(`${T.label} ${w} ${T.unit} ✓`);return true;};
+  // Messwert nach ID löschen; verknüpfte Messfotos (Metadaten + Blobs) werden mit entfernt
+  const delMs=(rId,fId,vId,mId)=>{if(!mId)return;const phs=msPhotos(gV(gF(gR(projRef.current,rId),fId),vId),mId).map(x=>x.id);
+    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(!v)return;v.messungen=(v.messungen||[]).filter(m=>m.id!==mId);if(phs.length)v.photos=(v.photos||[]).filter(x=>x.msId!==mId);});if(phs.length)phDel(phs);};
   const setFV=(rId,fId,vId,k,val)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.data)t.data={};t.data[k]=val;}});};
   const setFS=(rId,fId,vId,k,s)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.sources)t.sources={};t.sources[k]=s;}});};
   const setZu=(rId,fId,v)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.zustandRahmen=v;});};
@@ -1126,21 +1149,29 @@ function App(){
     <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} erfasst</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
     {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>)}</div>}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
-    <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
-    {(()=>{const T=MS_TYPES[msT]||MS_TYPES.gas;const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.map((m,idx)=>({m,idx})).filter(x=>msTyp(x.m)===t)})).filter(g=>g.list.length);
+    <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
+    {(()=>{const T=MS_TYPES[msT]||MS_TYPES.gas;const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.filter(m=>msTyp(m)===t)})).filter(g=>g.list.length);const msPh=(v.photos||[]).filter(p=>p.ms).length,orphans=msOrphans(v);
       return <div style={$.card}>
         <div onClick={()=>setShowGas(g=>!g)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,cursor:"pointer"}}>
           <div style={{...$.cardT,marginBottom:0}}>Messungen <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>· optional</span></div>
-          <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>{groups.map(g=>{const st=msStats(g.list.map(x=>x.m)),U=MS_TYPES[g.t];return <span key={g.t} style={{...$.badge,background:C.acBg,color:C.ac,fontFamily:"monospace"}}>{U.short} {st.n>1?"Ø ":""}{st.avg} {U.unit}{st.n>1?` ×${st.n}`:""}</span>;})}<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span></div>
+          <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>{groups.map(g=>{const st=msStats(g.list),U=MS_TYPES[g.t];return <span key={g.t} style={{...$.badge,background:C.acBg,color:C.ac,fontFamily:"monospace"}}>{U.short} {st.n>1?"Ø ":""}{st.avg} {U.unit}{st.n>1?` ×${st.n}`:""}</span>;})}{msPh>0&&<span style={{...$.badge,background:C.sf2,color:C.tx2}}>📷 {msPh}</span>}<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span></div>
         </div>
         {showGas&&<div style={{marginTop:12}}>
           <div style={{display:"flex",gap:4,marginBottom:4}}>{MS_KEYS.map(t=><button key={t} style={{...$.btn,...$.bS,flex:1,padding:"7px 2px",flexDirection:"column",gap:1,...(msT===t?$.bP:$.bO)}} onClick={()=>{setMsT(t);if(!MS_TYPES[t].neg&&numVal.startsWith("-"))setNumVal(numVal.slice(1));}}><span style={{fontWeight:700}}>{MS_TYPES[t].label}</span><span style={{fontSize:10,opacity:0.8}}>{MS_TYPES[t].unit}</span></button>)}</div>
           <NumPad value={numVal} onChange={setNumVal} unit={T.unit} neg={!!T.neg} onSubmit={val=>addMs(rm.id,f.id,v.id,msT,val)}/>
-          <div style={{fontSize:10,color:C.tx3,marginTop:6}}>Beliebig viele Werte je Messart möglich – jeder Wert wird mit Zeitstempel gespeichert.</div>
-          {groups.map(g=>{const st=msStats(g.list.map(x=>x.m)),U=MS_TYPES[g.t];return <div key={g.t} style={{marginTop:12}}>
+          <div style={{fontSize:10,color:C.tx3,marginTop:6}}>Beliebig viele Werte je Messart möglich – jeder Wert wird mit Zeitstempel gespeichert. 📷 in der Wertzeile: Foto zum Messwert (z.B. Display des Messgeräts).</div>
+          {groups.map(g=>{const st=msStats(g.list),U=MS_TYPES[g.t];return <div key={g.t} style={{marginTop:12}}>
             <div style={{...$.cardT,marginBottom:4}}>{U.label} ({st.n}){st.n>1&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3,letterSpacing:0}}> · Ø {st.avg} · {st.min} bis {st.max} {U.unit}</span>}</div>
-            {g.list.map(({m,idx},j)=><div key={idx} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:j<g.list.length-1?`1px solid ${C.bd}`:"none"}}><div><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert} {U.unit}</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div><button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:18,padding:"2px 8px"}} onClick={()=>{if(confirm(`${U.label} ${m.wert} ${U.unit} löschen?`))delMs(rm.id,f.id,v.id,idx);}}>×</button></div>)}
+            {g.list.map((m,j)=>{const phs=msPhotos(v,m.id);return <div key={m.id||j} style={{padding:"5px 0",borderBottom:j<g.list.length-1?`1px solid ${C.bd}`:"none"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
+                <div style={{flex:1,minWidth:0}}><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert} {U.unit}</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>{phs.length>0&&<span style={{...$.badge,background:C.sf2,color:C.tx2,marginLeft:6,fontSize:10}}>📷 {phs.length}</span>}</div>
+                <PhotoBtn small onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,ms:g.t,msId:m.id})}/>
+                <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:18,padding:"2px 8px"}} onClick={()=>{if(confirm(`${U.label} ${m.wert} ${U.unit} löschen?`+(phs.length?` ${phs.length} verknüpfte(s) Foto(s) werden mitgelöscht.`:"")))delMs(rm.id,f.id,v.id,m.id);}}>×</button>
+              </div>
+              <ThumbRow photos={phs} title={msLabel(m)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/>
+            </div>;})}
           </div>;})}
+          {orphans.length>0&&<div style={{marginTop:12}}><div style={{...$.cardT,marginBottom:4}}>Messfotos ohne Wert ({orphans.length})</div><ThumbRow photos={orphans} title="Messfoto ohne Wert" onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>}
         </div>}
       </div>;})()}
     {/* Navigation */}
