@@ -215,39 +215,52 @@ const DEFAULTABLE_FIELDS = [
 ];
 
 const FIELDS={
-  fassade:{label:"Fassadenorientierung",g:"f",t:"select",o:ORIENTATIONS},
-  fensterBauart:{label:"Fensterbauart",g:"f",t:"select",o:FEN_BAUART},
-  rahmenMaterial:{label:"Rahmenmaterial",g:"f",t:"select",o:FRAME_MAT},
-  rahmenProfiltiefe:{label:"Rahmenprofiltiefe [mm]",g:"f",t:"number",src:true},
-  baujahr:{label:"Baujahr",g:"f",t:"number",src:true},
-  fensterBreite:{label:"Breite Fenster [mm]",g:"f",t:"number",src:true},
-  fensterHoehe:{label:"Höhe Fenster [mm]",g:"f",t:"number",src:true},
-  ufWert:{label:"Uf-Wert [W/m²K]",g:"f",t:"number",step:"0.01",src:true},
-  uwWert:{label:"Uw-Wert [W/m²K]",g:"f",t:"number",step:"0.01",src:true},
-  dichtungAnzahl:{label:"Dichtungsebenen",g:"f",t:"select",o:DI_ANZ},
-  dichtungMaterial:{label:"Dichtungsmaterial",g:"f",t:"select",o:DI_MAT},
-  dichtungZustand:{label:"Zustand Dichtungen",g:"f",t:"select",o:DI_ZUST},
-  beschlagTyp:{label:"Beschlagtyp",g:"f",t:"select",o:BE_TYP},
-  beschlagZustand:{label:"Zustand Beschläge",g:"f",t:"select",o:BE_ZUST},
-  zustandRahmen:{label:"Zustand Rahmen",g:"f",t:"zustand"},
-  geometrie:{label:"Fenstergeometrie (Skizze)",g:"f",t:"geo"},
-  rahmenmasse:{label:"Rahmen-Abmessungen (Detail)",g:"f",t:"masse"},
-  verglasungsTyp:{label:"Verglasungsaufbau",g:"v",t:"select",o:GLAZ_TYPES},
-  scheibenaufbau:{label:"Scheibenaufbau [mm]",g:"v",t:"text",ph:"z.B. 4/16/4",hint:"Format: Glas/Zwischenraum/Glas in mm – z.B. 4/16/4 oder 4/12/4/12/4",src:true},
-  glasDichtung:{label:"Verglasungsdichtung innen",g:"v",t:"select",o:VG_DICHT},
-  glasDichtungAussen:{label:"Verglasungsdichtung außen",g:"v",t:"select",o:VG_DICHT},
-  lowE:{label:"Low-E Beschichtung",g:"v",t:"select",o:LOWE_OPT},
-  gasart:{label:"Gasart",g:"v",t:"select",o:GAS_TYPES},
-  randverbundTyp:{label:"Randverbund-Typ",g:"v",t:"select",o:RV_TYPES},
-  randverbundZustand:{label:"Zustand Randverbund",g:"v",t:"select",o:RV_ZUST},
-  psiWert:{label:"ψ-Wert Randverbund [W/mK]",g:"v",t:"number",step:"0.001",src:true},
-  ugWert:{label:"Ug-Wert [W/m²K]",g:"v",t:"number",step:"0.01",src:true},
-  gWert:{label:"g-Wert",g:"v",t:"number",step:"0.01",src:true},
-  glasBreite:{label:"Glasbreite [mm]",g:"v",t:"number",src:true},
-  glasHoehe:{label:"Glashöhe [mm]",g:"v",t:"number",src:true},
-  glasBaujahr:{label:"Baujahr Verglasung",g:"v",t:"number",src:true},
-  stempel:{label:"Stempel/Kennzeichnung",g:"v",t:"text",ph:"Herstellerangaben"},
+  // Fenster – Lage & Aufbau
+  fassade:{label:"Fassadenorientierung",g:"f",t:"select",o:ORIENTATIONS,sec:"lage"},
+  fensterBauart:{label:"Fensterbauart",g:"f",t:"select",o:FEN_BAUART,sec:"lage"},
+  geometrie:{label:"Fenstergeometrie (Skizze)",g:"f",t:"geo",sec:"lage"},
+  fensterBreite:{label:"Breite Fenster [mm]",g:"f",t:"number",src:true,sec:"lage"},
+  fensterHoehe:{label:"Höhe Fenster [mm]",g:"f",t:"number",src:true,sec:"lage"},
+  // Fenster – Rahmen
+  rahmenMaterial:{label:"Rahmenmaterial",g:"f",t:"select",o:FRAME_MAT,sec:"rahmen"},
+  baujahr:{label:"Baujahr",g:"f",t:"number",src:true,sec:"rahmen"},
+  rahmenProfiltiefe:{label:"Rahmenprofiltiefe [mm]",g:"f",t:"number",src:true,sec:"rahmen"},
+  rahmenmasse:{label:"Rahmen-Abmessungen (Detail)",g:"f",t:"masse",sec:"rahmen"},
+  // Fenster – Funktion & Zustand (Flügel öffnen)
+  beschlagTyp:{label:"Beschlagtyp",g:"f",t:"select",o:BE_TYP,sec:"funktion"},
+  beschlagZustand:{label:"Zustand Beschläge",g:"f",t:"select",o:BE_ZUST,sec:"funktion"},
+  dichtungAnzahl:{label:"Dichtungsebenen",g:"f",t:"select",o:DI_ANZ,sec:"funktion"},
+  dichtungMaterial:{label:"Dichtungsmaterial",g:"f",t:"select",o:DI_MAT,sec:"funktion"},
+  dichtungZustand:{label:"Zustand Dichtungen",g:"f",t:"select",o:DI_ZUST,sec:"funktion"},
+  zustandRahmen:{label:"Zustand Rahmen",g:"f",t:"zustand",sec:"funktion"},
+  // Fenster – Kennwerte (eingeklappt; meist Standard- oder Planungswerte)
+  ufWert:{label:"Uf-Wert [W/m²K]",g:"f",t:"number",step:"0.01",src:true,sec:"fkenn"},
+  uwWert:{label:"Uw-Wert [W/m²K]",g:"f",t:"number",step:"0.01",src:true,sec:"fkenn"},
+  // Verglasung – Glasstempel (zuerst: liefert Aufbau und Baujahr)
+  stempel:{label:"Stempel/Kennzeichnung",g:"v",t:"text",ph:"Herstellerangaben",sec:"stempel"},
+  // Verglasung – Aufbau
+  verglasungsTyp:{label:"Verglasungsaufbau",g:"v",t:"select",o:GLAZ_TYPES,sec:"aufbau"},
+  scheibenaufbau:{label:"Scheibenaufbau [mm]",g:"v",t:"text",ph:"z.B. 4/16/4",hint:"Format: Glas/Zwischenraum/Glas in mm – z.B. 4/16/4 oder 4/12/4/12/4",src:true,sec:"aufbau"},
+  lowE:{label:"Low-E Beschichtung",g:"v",t:"select",o:LOWE_OPT,sec:"aufbau"},
+  gasart:{label:"Gasart",g:"v",t:"select",o:GAS_TYPES,sec:"aufbau"},
+  randverbundTyp:{label:"Randverbund-Typ",g:"v",t:"select",o:RV_TYPES,sec:"aufbau"},
+  randverbundZustand:{label:"Zustand Randverbund",g:"v",t:"select",o:RV_ZUST,sec:"aufbau"},
+  glasDichtung:{label:"Verglasungsdichtung innen",g:"v",t:"select",o:VG_DICHT,sec:"aufbau"},
+  glasDichtungAussen:{label:"Verglasungsdichtung außen",g:"v",t:"select",o:VG_DICHT,sec:"aufbau"},
+  glasBreite:{label:"Glasbreite [mm]",g:"v",t:"number",src:true,sec:"aufbau"},
+  glasHoehe:{label:"Glashöhe [mm]",g:"v",t:"number",src:true,sec:"aufbau"},
+  glasBaujahr:{label:"Baujahr Verglasung",g:"v",t:"number",src:true,sec:"aufbau"},
+  // Verglasung – Kennwerte (eingeklappt)
+  ugWert:{label:"Ug-Wert [W/m²K]",g:"v",t:"number",step:"0.01",src:true,sec:"vkenn"},
+  gWert:{label:"g-Wert",g:"v",t:"number",step:"0.01",src:true,sec:"vkenn"},
+  psiWert:{label:"ψ-Wert Randverbund [W/mK]",g:"v",t:"number",step:"0.001",src:true,sec:"vkenn"},
 };
+// Abschnitte der Eingabemasken (Reihenfolge = Anzeige = Einrichtung = Export-Spalten); collapsed = standardmäßig eingeklappt
+const SECTIONS=[
+  {id:"lage",g:"f",title:"Lage & Aufbau"},{id:"rahmen",g:"f",title:"Rahmen"},{id:"funktion",g:"f",title:"Funktion & Zustand"},{id:"fkenn",g:"f",title:"Kennwerte",collapsed:true},
+  {id:"stempel",g:"v",title:"Glasstempel"},{id:"aufbau",g:"v",title:"Aufbau"},{id:"vkenn",g:"v",title:"Kennwerte",collapsed:true},
+];
+const secFields=id=>Object.entries(FIELDS).filter(([,d])=>d.sec===id);
 
 const PRESETS={
   schnell:{name:"Schnell",desc:"Nur Verglasungstyp + Fotos",fields:["verglasungsTyp"]},
@@ -622,6 +635,16 @@ class ErrorBoundary extends React.Component{
   render(){if(!this.state.err)return this.props.children;
     return <div style={{...$.app,padding:16}}><div style={{...$.card,borderColor:C.err,marginTop:40}}><div style={{fontWeight:800,fontSize:16,marginBottom:8}}>⚠ Unerwarteter Fehler</div><div style={{fontSize:13,color:C.tx2,marginBottom:10,lineHeight:1.5}}>Die bisher erfassten Daten sind gespeichert. Bitte die App neu laden.</div><pre style={{fontSize:11,whiteSpace:"pre-wrap",color:C.err,marginBottom:12}}>{String((this.state.err&&this.state.err.message)||this.state.err)}</pre><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>location.reload()}>Neu laden</button></div></div>;}
 }
+// Einklappbarer Abschnitt einer Eingabemaske: Titel wie $.cardT, Chevron wie in der Raumliste; summary nur eingeklappt sichtbar
+function Sec({title,collapsed,summary,children}){const[open,setOpen]=useState(!collapsed);
+  return <div style={{marginBottom:8}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",userSelect:"none",padding:"4px 0",borderBottom:`1px solid ${C.bd}`,marginBottom:6}}>
+      <span style={{fontSize:11,color:C.tx3,transition:"transform 0.2s",transform:open?"rotate(0deg)":"rotate(-90deg)"}}>▼</span>
+      <span style={{...$.cardT,marginBottom:0}}>{title}</span>
+      {!open&&summary?<span style={{flex:1,minWidth:0,fontSize:11,color:C.tx3,textAlign:"right",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{summary}</span>:null}
+    </div>
+    {open&&<div>{children}</div>}
+  </div>;}
 function Tog({value:v,onChange:ch,label:l}){return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 0"}}><span style={{fontSize:13}}>{l}</span><div style={$.tog(v)} onClick={()=>ch(!v)}><div style={$.togD(v)}/></div></div>;}
 
 // Confirm Dialog
@@ -964,7 +987,8 @@ function App(){
   const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=x.kb?x.kb*1024:(x.data||"").length*0.75;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});return{rooms:(p?.rooms||[]).length,g,m,ph,mb:pb/1048576};};
   const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgErf(f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
   const isA=k=>(proj?.activeFields||[]).includes(k);
-  const fFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&d.t!=="geo"&&d.t!=="masse"&&isA(k));
+  const secFs=id=>secFields(id).filter(([k,d])=>isA(k)&&(d.t!=="zustand"||hasZ()));   // aktive Felder eines Abschnitts (inkl. Sonderfelder Zustand/Geometrie/Rahmenmaße)
+  const kennSum=(flds,rec,fenRec,vgRec)=>flds.map(([k,d])=>{const val=rec?.data?.[k]||getDef(k,fenRec,vgRec);return val?`${d.label.split(" [")[0]} ${val}`:null;}).filter(Boolean).join(" · ")||"keine Werte";   // Zusammenfassung eingeklappter Kennwerte
   const vFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&k!=="stempel"&&isA(k));
   const hasZ=()=>proj?.zustandModus&&proj.zustandModus!=="Keine"&&isA("zustandRahmen");
   const getDef=(k,fenRec,vgRec)=>resolveDef(k,fenRec,vgRec,proj);
@@ -1076,8 +1100,8 @@ function App(){
     <div style={$.card}><div style={$.cardT}>Modus</div>{hasData(p)&&<div style={{fontSize:11,color:C.warn,marginBottom:6}}>⚠ Modus kann nicht geändert werden, da bereits Messdaten vorhanden sind.</div>}<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Standard: „Fenster + Verglasung" (mit Geometrie & Rahmen). „Nur Verglasungen" nur für reine Glaserfassung ohne Fensterdaten.</div><div style={{display:"flex",gap:8}}>{[["fenster","⊞","Fenster + Verglasung"],["verglasung","◻","Nur Verglasungen"]].map(([m,i,t])=><div key={m} onClick={()=>trySetModus(m)} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center",opacity:hasData(p)&&p.modus!==m?0.4:1}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Zustand Rahmen</div><div style={{display:"flex",gap:4}}>{["Keine","Einfach","Freitext","Detailliert"].map(z=><div key={z} onClick={()=>setProj({...p,zustandModus:z})} style={{flex:1,padding:"7px 2px",borderRadius:6,border:`1px solid ${(p.zustandModus||"Keine")===z?C.ac:C.bd}`,background:(p.zustandModus||"Keine")===z?C.acBg:"transparent",cursor:"pointer",textAlign:"center",fontSize:11,fontWeight:600}}>{z}</div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Profil</div><div style={{display:"flex",gap:6,marginBottom:10}}>{Object.entries(PRESETS).map(([k,pr])=><button key={k} style={{...$.btn,...$.bO,...$.bS,flex:1,flexDirection:"column",padding:"8px 4px",height:"auto"}} onClick={()=>setProj({...p,activeFields:[...pr.fields]})}><span style={{fontWeight:700,fontSize:12}}>{pr.name}</span><span style={{fontSize:9,color:C.tx2}}>{pr.desc}</span></button>)}</div>
-      <div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4}}>FENSTER</div>{Object.entries(FIELDS).filter(([,d])=>d.g==="f").map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}
-      <div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4,marginTop:12}}>VERGLASUNG</div>{Object.entries(FIELDS).filter(([,d])=>d.g==="v").map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}</div>
+      {["f","v"].map(g=><div key={g}><div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4,marginTop:g==="v"?12:0}}>{g==="f"?"FENSTER":"VERGLASUNG"}</div>
+        {SECTIONS.filter(sc=>sc.g===g).map(sc=><div key={sc.id}><div style={{...$.lbl,marginTop:6,color:C.tx3}}>{sc.title}</div>{secFields(sc.id).map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}</div>)}</div>)}</div>
 
     {/* Project Defaults */}
     <div style={$.card}><div style={$.cardT}>Standardwerte (Projekt)</div>
@@ -1170,7 +1194,13 @@ function App(){
 
   // ROOM
   if(view==="room"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);if(!rm){setView("survey");return null;}
-    const rs=rSt(rm);const isV=p.modus==="verglasung";const ff=fFs();const vf=vFs();
+    const rs=rSt(rm);const isV=p.modus==="verglasung";const vf=vFs();
+    const fld=(f,[k,d])=>{  // Feld eines Abschnitts rendern (Sonderfelder: Zustand Rahmen, Geometrie, Rahmenmaße)
+      if(d.t==="zustand")return <ZustInp key={k} modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>;
+      if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>;
+      if(d.t==="masse")return <div key={k} style={{marginBottom:8}}><label style={$.lbl}>{d.label}</label><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>;
+      return <FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;};
+    const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div><button style={$.hdrB} onClick={()=>setEdR({trakt:rm.trakt||"",geschoss:rm.geschoss||"EG",raumnummer:rm.raumnummer||"",raumId:rm.raumId||""})} title="Raum bearbeiten">✎</button><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
     {/* Quick add with custom input */}
@@ -1203,10 +1233,8 @@ function App(){
         {vf.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{vf.slice(0,3).map(([k,d])=><div key={k} style={{flex:1,minWidth:80}}>{d.t==="select"?<select style={{...$.sel,...$.selS,fontSize:11}} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}><option value="">{getDef(k,f,v)?`Std: ${getDef(k,f,v)}`:d.label.split(" ")[0]+"..."}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>:<DInp style={{...$.inp,...$.inpS,fontSize:11}} placeholder={getDef(k,f,v)||d.label.split("[")[0]} value={v?.data?.[k]||""} onCommit={val=>setFV(rm.id,f.id,v.id,k,val)}/>}</div>)}</div>}
       </div>;}
       else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster umbenennen" onClick={()=>{const n=prompt("Fenster-Nr. / Bezeichnung",f.nr);if(n!=null)renFen(rm.id,f.id,n);}}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button></div></div>
-        {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>)}</div>}
-        {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
-        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>}
-        {isA("rahmenmasse")&&<div style={{marginBottom:8}}><div style={$.cardT}>Rahmen-Abmessungen</div><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>}
+        <div style={{marginBottom:8}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
+        {secBlock(f,"lage")}{secBlock(f,"rahmen")}{secBlock(f,"funktion")}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
             <span style={{fontWeight:700,fontSize:13}}>Verglasung {v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:12}}>{fmtMs(lm)}</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}
@@ -1217,7 +1245,7 @@ function App(){
           </div>
         </div>;})}
         <button style={{...$.btn,...$.bO,...$.bS,marginTop:2}} onClick={()=>addVgToFen(rm.id,f.id)}>+ Verglasung</button>
-        <div style={{marginTop:6}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
+        {secBlock(f,"fkenn")}
         <div style={{marginTop:8}}><label style={$.lbl}>Bemerkungen</label><DInp multiline style={{...$.inp,...$.inpS}} value={f.notizen||""} onCommit={t=>setNotiz(rm.id,f.id,null,t)} placeholder="Auffälligkeiten, Hinweise zum Fenster…"/></div></div>;
     })}
     {/* Add button */}
@@ -1243,6 +1271,7 @@ function App(){
   if(view==="measure"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);const v=f?.verglasungen?.find(x=>x.id===vg?.id);
     if(!rm||!f||!v){setView("room");return null;}
     const isV=p.modus==="verglasung";const label=isV?f.nr:`${f.nr} · Verglasung ${v.nr}`;const vf=vFs();
+    const vfld=([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={sv=>setFS(rm.id,f.id,v.id,k,sv)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>;
     let all=[];rm.fenster.forEach(x=>x.verglasungen.forEach(y=>all.push({f:x,v:y})));const idx=all.findIndex(x=>x.v.id===v.id);const tot=all.length;const msd=all.filter(x=>vgErf(x.f,x.v)).length;
     const go=i=>{setFen(all[i].f);setVg(all[i].v);setNumVal("");};
     const navTo=(i)=>guardNav(()=>go(i));
@@ -1263,8 +1292,8 @@ function App(){
         <div style={{width:130,flexShrink:0}}><GeoSvg mini geo={f.geometrie} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} verglasungen={f.verglasungen} highlightVg={v.id} onSel={(pth,n)=>{if(n.vg&&n.vg!==v.id){const i=all.findIndex(x=>x.v.id===n.vg);if(i>=0)navTo(i);}}}/></div>
         <div style={{fontSize:11,color:C.tx2,lineHeight:1.5}}>{lf?<span>Feld: <b style={{color:C.tx}}>{lf.node.role||"Hauptfeld"}</b>{lf.node.art?` · ${lf.node.art}${lf.node.band?" ("+BAND_L[lf.node.band]+")":""}`:""}</span>:<span>Diese Verglasung ist keinem Feld zugeordnet (im Fenster „aus Geometrie übernehmen").</span>}<br/><span style={{color:C.tx3}}>Feld antippen = zu dieser Verglasung springen</span></div>
       </div>;})()}
-    {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>)}</div>}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
+    {secFs("aufbau").length>0&&<div style={$.card}><Sec title="Aufbau">{secFs("aufbau").map(vfld)}</Sec></div>}
     <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
     {(()=>{const T=MS_TYPES[msT]||MS_TYPES.gas;const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.filter(m=>msTyp(m)===t)})).filter(g=>g.list.length);const msPh=(v.photos||[]).filter(p=>p.ms).length,orphans=msOrphans(v);
       return <div style={$.card}>
@@ -1290,6 +1319,7 @@ function App(){
           {orphans.length>0&&<div style={{marginTop:12}}><div style={{...$.cardT,marginBottom:4}}>Messfotos ohne Wert ({orphans.length})</div><ThumbRow photos={orphans} title="Messfoto ohne Wert" onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>}
         </div>}
       </div>;})()}
+    {secFs("vkenn").length>0&&<div style={$.card}><Sec title="Kennwerte" collapsed summary={kennSum(secFs("vkenn"),v,f,v)}>{secFs("vkenn").map(vfld)}</Sec></div>}
     <div style={$.card}><div style={$.cardT}>Bemerkungen</div><DInp multiline style={{...$.inp,...$.inpS}} value={v.notizen||""} onCommit={t=>setNotiz(rm.id,f.id,v.id,t)} placeholder="Auffälligkeiten, Hinweise zur Verglasung…"/></div>
     {/* Navigation */}
     <div style={{display:"flex",gap:6,marginTop:8}}>
