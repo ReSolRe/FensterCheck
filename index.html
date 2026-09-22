@@ -100,26 +100,110 @@ function resolveDef(k,fen,vg,p){
   else if(k==="psiWert"){const rv=sel(vg,"randverbundTyp");if(rv&&rv!=="Unbekannt")cond=T.psi[rv];}
   return (cond===0||cond)&&cond!==""?String(cond):flat;
 }
-// Geometrie-Helfer (Zeilen-Modell: rows[{h,cols}], cells{"r:c":{art,band}})
+// Geometrie – rekursiver Teilungsbaum (Guillotine-Schnitte): f.geometrie={tree}. Blatt={art,band,vg,role}, Teilung={dir:"v"|"h",w:[…],kids:[…],role[,steg]}
+// Alte Formen (Zeilen-Modell rows/cells, ältestes Raster fluegel/oberlicht/…) werden in normalizeGeo verlustfrei umgewandelt.
 const BAND_L={"":"","L":"Links","R":"Rechts","O":"Oben","U":"Unten"};
-const newGeo=()=>({rows:[{h:3,cols:1}],cells:{}});
+const GEO_BANDS={"Dreh":["L","R"],"Dreh-Kipp":["L","R"],"Kipp":["O","U"],"Klapp":["O","U"]};
+const GEO_BAND_DEF={"Kipp":"U","Klapp":"O"};
+const GEO_MAX_DEPTH=5,GEO_ASPECT_DEF=1.2,GEO_GAP={pfosten:6,stulp:2,riegel:6}; // Trennelemente in viewBox-Einheiten (größere Seite = 300)
+const geoBandFor=(art,band)=>{const ok=GEO_BANDS[art]||[];return ok.includes(band)?band:(GEO_BAND_DEF[art]||"");};
+const geoLeaf=p=>({art:"",band:"",vg:"",role:"",...(p||{})});
+const geoIsLeaf=n=>!Array.isArray(n.kids);
+const newGeo=()=>({tree:geoLeaf()});
+const geoClone=g=>JSON.parse(JSON.stringify(g));
+const geoPath=(parent,i)=>parent===""?String(i):parent+"."+i;   // Pfad "" = Wurzel, "1.0" = kids[1].kids[0] (Achtung: "" ist falsy → immer !=null prüfen)
+const geoParentPath=p=>{const i=p.lastIndexOf(".");return i<0?"":p.slice(0,i);};
+const geoIdx=p=>+p.slice(p.lastIndexOf(".")+1);
+function geoNode(g,path){if(path==null)return null;let n=g.tree;if(path==="")return n;for(const s of path.split(".")){if(!n||!n.kids||!n.kids[+s])return null;n=n.kids[+s];}return n;}
+// Knoten reparieren/kanonisieren: Teilung mit einem Kind → Kind, Gewichte ganzzahlig ≥1, nur gültige Werte, feste Schlüsselreihenfolge
+function geoFixNode(n){
+  if(!n||typeof n!=="object")return geoLeaf();
+  if(Array.isArray(n.kids)){
+    const kids=n.kids.map(geoFixNode),role=ROW_ROLES.includes(n.role)?n.role:"";
+    if(kids.length===0)return geoLeaf({role});
+    if(kids.length===1){const k=kids[0];if(!k.role&&role)k.role=role;return k;}
+    const dir=n.dir==="v"?"v":"h";
+    const w=kids.map((_,i)=>{const x=Math.round(+(n.w&&n.w[i]));return x>=1?x:1;});
+    const out={dir,w,kids,role};if(dir==="v")out.steg=n.steg==="stulp"?"stulp":"pfosten";
+    return out;}
+  const art=FEN_TYPEN.includes(n.art)?n.art:"";
+  return {art,band:(GEO_BANDS[art]||[]).includes(n.band)?n.band:"",vg:typeof n.vg==="string"?n.vg:"",role:ROW_ROLES.includes(n.role)?n.role:""};
+}
+function geoFromRows(rows,cells){  // Zeilen-Modell → Baum (verlustfrei; Leserichtung oben→unten, links→rechts bleibt)
+  const c=k=>(cells&&cells[k])||{};
+  const rowNode=(row,ri)=>{const cols=row.cols||1;
+    if(cols<=1)return geoLeaf({art:c(ri+":0").art,band:c(ri+":0").band,vg:c(ri+":0").vg,role:row.role});
+    const w=(row.w&&row.w.length===cols)?row.w.slice():Array(cols).fill(1);
+    return {dir:"v",w,kids:Array.from({length:cols},(_,ci)=>geoLeaf({art:c(ri+":"+ci).art,band:c(ri+":"+ci).band,vg:c(ri+":"+ci).vg})),role:row.role||"",steg:"pfosten"};};
+  if(!rows.length)return geoLeaf();
+  if(rows.length===1)return rowNode(rows[0],0);
+  return {dir:"h",w:rows.map(r=>r.h||1),kids:rows.map(rowNode),role:""};
+}
 function normalizeGeo(g){
-  if(!g)return newGeo();
-  if(Array.isArray(g.rows))return g;
-  if("fluegel" in g){const rows=[];if(g.oberlicht)rows.push({h:1,cols:1});rows.push({h:3,cols:g.fluegel||1});if(g.bruestung)rows.push({h:1,cols:1});
-    const cells={},mi=g.oberlicht?1:0;for(let c=0;c<(g.fluegel||1);c++){const t=g.oeff&&g.oeff["main:"+c+":0:0"];if(t)cells[mi+":"+c]={art:t,band:""};}
-    return {rows,cells};}
+  if(!g||typeof g!=="object")return newGeo();
+  if(g.tree)return {tree:geoFixNode(g.tree)};
+  if(Array.isArray(g.rows))return {tree:geoFixNode(geoFromRows(g.rows,g.cells))};
+  if("fluegel" in g){const rows=[],cells={};if(g.oberlicht)rows.push({h:1,cols:1,role:"Oberlicht"});const mi=rows.length;rows.push({h:3,cols:g.fluegel||1});if(g.bruestung)rows.push({h:1,cols:1,role:"Brüstung"});
+    for(let c=0;c<(g.fluegel||1);c++){const t=g.oeff&&g.oeff["main:"+c+":0:0"];if(t)cells[mi+":"+c]={art:t,band:""};}
+    return {tree:geoFixNode(geoFromRows(rows,cells))};}
   return newGeo();
 }
-function pruneCells(rows,cells){const out={};Object.keys(cells||{}).forEach(k=>{const[r,c]=k.split(":").map(Number);if(rows[r]&&c<(rows[r].cols||1))out[k]=cells[k];});return out;}
-function shiftCells(cells,delta){const out={};Object.keys(cells||{}).forEach(k=>{const[r,c]=k.split(":").map(Number);out[(r+delta)+":"+c]=cells[k];});return out;}
-function dropRowCells(ri,cells){const out={};Object.keys(cells||{}).forEach(k=>{const[r,c]=k.split(":").map(Number);if(r===ri)return;out[(r>ri?r-1:r)+":"+c]=cells[k];});return out;}
-function geoCellCount(g){g=normalizeGeo(g);return (g.rows||[]).reduce((s,r)=>s+(r.cols||1),0);}
-function geoSummary(g){g=normalizeGeo(g);const rows=g.rows||[];if(!rows.length)return "";
-  const parts=[rows.map(r=>(r.role?r.role+":":"")+(r.cols||1)+"-flg").join("/")];
-  const ops=[];Object.keys(g.cells||{}).sort().forEach(k=>{const c=g.cells[k];if(c&&c.art)ops.push(c.art+(c.band?"("+c.band+")":""));});
-  if(ops.length)parts.push("Öffnung: "+ops.join(", "));
-  return parts.join("; ");}
+function geoLeaves(g){g=normalizeGeo(g);const out=[];const walk=(n,path)=>{if(geoIsLeaf(n))out.push({path,node:n});else n.kids.forEach((k,i)=>walk(k,geoPath(path,i)));};walk(g.tree,"");return out;}
+function geoCellCount(g){return geoLeaves(g).length;}
+function geoMovableCount(g){return geoLeaves(g).filter(l=>l.node.art&&l.node.art!=="Fest"&&l.node.art!=="Sonstig").length;}
+function geoHasContent(g){return geoLeaves(g).some(l=>l.node.art||l.node.vg);}
+function geoAspect(b,h){const B=parseFloat(b),H=parseFloat(h);if(B>0&&H>0)return Math.round(Math.min(3,Math.max(0.4,B/H))*100)/100;return GEO_ASPECT_DEF;}
+// Export-Text: Struktur (Blatt = Kürzel(Band), " / " übereinander, " | " Pfosten, " ¦ " Stulp, [ ] verschachtelt) + Liste der Öffnungsarten
+function geoSummary(g){g=normalizeGeo(g);const t=g.tree;if(geoIsLeaf(t)&&!t.art&&!t.role)return "";
+  const s=(n,root)=>{const r=n.role?n.role+":":"";if(geoIsLeaf(n))return r+(n.art?(FEN_AB[n.art]||"?")+(n.band?"("+n.band+")":""):"-");
+    const sep=n.dir==="h"?" / ":(n.steg==="stulp"?" ¦ ":" | ");const inner=n.kids.map(k=>s(k,false)).join(sep);return r+(root?inner:"["+inner+"]");};
+  const ops=geoLeaves(g).filter(l=>l.node.art).map(l=>l.node.art+(l.node.band?"("+l.node.band+")":""));
+  return s(t,true)+(ops.length?"; Öffnung: "+ops.join(", "):"");}
+// Transformationen: liefern immer ein neues, normalisiertes {tree}; ungültiger Pfad → unverändert
+function geoMapLeaves(g,fn){g=geoClone(normalizeGeo(g));let i=0;const walk=(n,path)=>{if(geoIsLeaf(n))return geoLeaf(fn(n,path,i++));n.kids=n.kids.map((k,j)=>walk(k,geoPath(path,j)));return n;};g.tree=walk(g.tree,"");return normalizeGeo(g);}
+function geoRemapVg(g,map){return geoMapLeaves(g,l=>({...l,vg:l.vg?(map[l.vg]||""):""}));}   // Duplizieren: Verglasungs-IDs umhängen
+function geoUnlinkVg(g,vgId){return geoMapLeaves(g,l=>l.vg===vgId?{...l,vg:""}:l);}         // Verglasung gelöscht: Verknüpfung lösen
+function geoFromArt(art){const a=FEN_TYPEN.includes(art)?art:"";return {tree:geoLeaf({art:a,band:geoBandFor(a,"")})};}  // Ein-Feld-Geometrie (Migration „Fenstertyp")
+function geoSetLeaf(g,path,patch){g=geoClone(normalizeGeo(g));const n=geoNode(g,path);if(!n||!geoIsLeaf(n))return g;const oldArt=n.art;Object.assign(n,patch);  // Artwechsel: Vorbelegung (Kipp=U, Klapp=O), sonst zulässiges Band behalten
+  if("art" in patch&&patch.art!==oldArt)n.band=GEO_BAND_DEF[n.art]||geoBandFor(n.art,n.band);else if("band" in patch)n.band=geoBandFor(n.art,n.band);return normalizeGeo(g);}
+function geoSetNode(g,path,patch){g=geoClone(normalizeGeo(g));const n=geoNode(g,path);if(!n)return g;Object.assign(n,patch);return normalizeGeo(g);}
+// Feld teilen (1:1): Rolle wandert auf die Teilung; erstes Kind erbt Art/Band/Verglasung, zweites nur die Art (Band bei senkrechter Teilung gespiegelt)
+function geoSplit(g,path,dir){g=geoClone(normalizeGeo(g));const n=geoNode(g,path);if(!n||!geoIsLeaf(n)||(path&&path.split(".").length>=GEO_MAX_DEPTH))return g;
+  const mirror=b=>b==="L"?"R":b==="R"?"L":b;const a={...n,role:""},b={...n,role:"",vg:"",band:dir==="v"?mirror(n.band):n.band};
+  const sp={dir:dir==="v"?"v":"h",w:[1,1],kids:[a,b],role:n.role};if(sp.dir==="v")sp.steg="pfosten";
+  if(path==="")g.tree=sp;else{const pa=geoNode(g,geoParentPath(path));pa.kids[geoIdx(path)]=sp;}return normalizeGeo(g);}
+function geoRemove(g,path){g=geoClone(normalizeGeo(g));if(!path)return g;const pa=geoNode(g,geoParentPath(path));if(!pa||!pa.kids)return g;const i=geoIdx(path);pa.kids.splice(i,1);pa.w.splice(i,1);return normalizeGeo(g);}
+function geoSetWeight(g,path,delta){g=geoClone(normalizeGeo(g));if(!path)return g;const pa=geoNode(g,geoParentPath(path));if(!pa||!pa.w)return g;const i=geoIdx(path);pa.w[i]=Math.max(1,(pa.w[i]||1)+delta);return g;}
+function geoAddBand(g,top,role){g=geoClone(normalizeGeo(g));const leaf=geoLeaf({role}),t=g.tree;   // + Oberlicht (oben) / + Brüstung (unten)
+  if(!geoIsLeaf(t)&&t.dir==="h"){const w=Math.max(1,Math.round(t.w.reduce((a,b)=>a+b,0)/3));if(top){t.kids.unshift(leaf);t.w.unshift(w);}else{t.kids.push(leaf);t.w.push(w);}}
+  else g.tree=top?{dir:"h",w:[1,3],kids:[leaf,t],role:""}:{dir:"h",w:[3,1],kids:[t,leaf],role:""};
+  return normalizeGeo(g);}
+// Rechtecke aller Knoten (Pre-Order) + Trennelemente {sep} in viewBox-Einheiten; dir v teilt die Breite, dir h die Höhe nach den Gewichten w
+function geoLayout(node,x,y,w,h,path,out){path=path||"";out=out||[];out.push({path,node,leaf:geoIsLeaf(node),x,y,w,h});if(geoIsLeaf(node))return out;
+  const v=node.dir==="v",n=node.kids.length,sep=v?(node.steg==="stulp"?"stulp":"pfosten"):"riegel",gap=GEO_GAP[sep];
+  const avail=Math.max(0,(v?w:h)-gap*(n-1)),sum=node.w.reduce((a,b)=>a+b,0)||n;let pos=v?x:y;
+  node.kids.forEach((k,i)=>{const sz=node.w[i]/sum*avail,kp=geoPath(path,i);
+    if(v)geoLayout(k,pos,y,sz,h,kp,out);else geoLayout(k,x,pos,w,sz,kp,out);
+    if(i<n-1)out.push({sep,path:kp+"#",x:v?pos+sz:x,y:v?y:pos+sz,w:v?gap:w,h:v?h:gap});
+    pos+=sz+gap;});return out;}
+// Vorlagen-Galerie: jede make() liefert einen frischen Baum (Band L/R ist Vorbelegung)
+const _Lf=(art,band,role)=>geoLeaf({art:art||"",band:band||"",role:role||""});
+const _V=(kids,w,steg,role)=>({dir:"v",w:w||kids.map(()=>1),kids,role:role||"",steg:steg||"pfosten"});
+const _H=(kids,w,role)=>({dir:"h",w:w||kids.map(()=>1),kids,role:role||""});
+const GEO_TEMPLATES=[
+  {id:"dk1",name:"1-flg DK",make:()=>({tree:_Lf("Dreh-Kipp","L")})},
+  {id:"dk2",name:"2-flg Stulp",make:()=>({tree:_V([_Lf("Dreh","L"),_Lf("Dreh-Kipp","R")],[1,1],"stulp")})},
+  {id:"dfd3",name:"3-flg D/F/D",make:()=>({tree:_V([_Lf("Dreh","L"),_Lf("Fest"),_Lf("Dreh","R")],[1,1,1],"pfosten")})},
+  {id:"dk1o",name:"1-flg + Oberlicht",make:()=>({tree:_H([_Lf("Kipp","U","Oberlicht"),_Lf("Dreh-Kipp","L")],[1,3])})},
+  {id:"dk2o",name:"2-flg + Oberlicht",make:()=>({tree:_H([_Lf("Kipp","U","Oberlicht"),_V([_Lf("Dreh","L"),_Lf("Dreh-Kipp","R")],[1,1],"stulp")],[1,3])})},
+  {id:"dk1b",name:"1-flg + Brüstung",make:()=>({tree:_H([_Lf("Dreh-Kipp","L"),_Lf("Fest","","Brüstung")],[3,1])})},
+  {id:"tuer",name:"Fenstertür",aspect:0.45,make:()=>({tree:_Lf("Dreh-Kipp","L")})},
+  {id:"fest",name:"Festverglasung",make:()=>({tree:_Lf("Fest")})},
+  {id:"schieb",name:"Schiebe 2-teilig",make:()=>({tree:_V([_Lf("Schiebe"),_Lf("Schiebe")],[1,1],"stulp")})},
+  {id:"dkkdk",name:"DK | Kipp/DK",make:()=>({tree:_V([_Lf("Dreh-Kipp","L"),_H([_Lf("Kipp","U"),_Lf("Dreh-Kipp","R")],[1,2])],[1,1],"pfosten")})},
+  {id:"dk2ob",name:"2-flg + Oberl. + Brüst.",make:()=>({tree:_H([_Lf("Kipp","U","Oberlicht"),_V([_Lf("Dreh","L"),_Lf("Dreh-Kipp","R")],[1,1],"stulp"),_Lf("Fest","","Brüstung")],[1,3,1])})},
+  {id:"leer",name:"Leer (1 Feld)",make:()=>newGeo()},
+];
 function masseSummary(m){if(!m)return "";const ab={oben:"O",unten:"U",links:"L",rechts:"R",mittelV:"MV",mittelH:"MH"};return RM_POS.map(([k])=>{const v=m[k]||{};const i=v.i||"",a=v.a||"";return (i||a)?ab[k]+" "+(i||"-")+"/"+(a||"-"):"";}).filter(Boolean).join(" · ");}
 
 // Fields that support project-level defaults
@@ -309,14 +393,14 @@ function buildExport(p){
   vf.forEach(([k,d])=>{fHead.push(d.label);if(d.src&&p.showSrc)fHead.push(d.label+" [Quelle]");});
   ff.forEach(([k,d])=>{fHead.push(d.label);if(d.src&&p.showSrc)fHead.push(d.label+" [Quelle]");});
   if(zOn)fHead.push("Zustand Rahmen");
-  if(geoOn)fHead.push("Geometrie","Zeilen","Felder");
+  if(geoOn)fHead.push("Geometrie","Felder","Flügel beweglich");
   if(masseOn)fHead.push("Rahmenmaße i/a [mm]");
   fHead.push("Notizen");
   const fCells=(fen,vg)=>{const row=[];
     vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src&&p.showSrc)row.push(vg.sources?.[k]||"");});
     ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src&&p.showSrc)row.push(fen.sources?.[k]||"");});
     if(zOn)row.push(fen.zustandRahmen||"");
-    if(geoOn){const g=fen.geometrie;row.push(geoSummary(g),g?normalizeGeo(g).rows.length:"",g?geoCellCount(g):"");}
+    if(geoOn){const g=fen.geometrie;row.push(g?geoSummary(g):"",g?geoCellCount(g):"",g?geoMovableCount(g):"");}
     if(masseOn)row.push(masseSummary(fen.rahmenmasse));
     row.push(vg.notizen||"");return row;};
   const loc=(room,fen,vg)=>[room.trakt||"",room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||""];
@@ -536,78 +620,87 @@ function ConfirmDialog({message,onYes,onNo}){
   </div></div>;
 }
 
-// DIN-Öffnungssymbol je Feld (Dreieck-Spitze zur Bandseite)
-function openingSymbol(cell,x,y,w,h,key){
-  const a=cell.art||"",band=cell.band||"",col=C.ac,sw=1.2,m=4,els=[];const cx=x+w/2,cy=y+h/2;
-  const L=(x1,y1,x2,y2,i)=><line key={key+"_"+i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={col} strokeWidth={sw} style={{pointerEvents:"none"}}/>;
+// DIN-Öffnungssymbol je Feld: Dreh = Dreieck-Spitze zur Bandseite (L/R); Kipp = Spitze oben (Band unten), Klapp = Spitze unten (Band oben)
+function openingSymbol(cell,x,y,w,h,key,mini){
+  const a=cell.art||"",band=geoBandFor(a,cell.band||""),col=C.ac,sw=1.2,m=Math.min(4,w/6,h/6),els=[];if(w<10||h<10)return els;const cx=x+w/2,cy=y+h/2;
+  const st=mini?{pointerEvents:"none",vectorEffect:"non-scaling-stroke"}:{pointerEvents:"none"};
+  const L=(x1,y1,x2,y2,i)=><line key={key+"_"+i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={col} strokeWidth={sw} style={st}/>;
   const drehL=()=>[L(x+w-m,y+m,x+m,cy,1),L(x+w-m,y+h-m,x+m,cy,2)];
   const drehR=()=>[L(x+m,y+m,x+w-m,cy,1),L(x+m,y+h-m,x+w-m,cy,2)];
-  const apexTop=()=>[L(x+m,y+h-m,cx,y+m,3),L(x+w-m,y+h-m,cx,y+m,4)];   // Spitze oben → Kipp
-  const apexBottom=()=>[L(x+m,y+m,cx,y+h-m,5),L(x+w-m,y+m,cx,y+h-m,6)]; // Spitze unten → Klapp
+  const apexTop=()=>[L(x+m,y+h-m,cx,y+m,3),L(x+w-m,y+h-m,cx,y+m,4)];
+  const apexBottom=()=>[L(x+m,y+m,cx,y+h-m,5),L(x+w-m,y+m,cx,y+h-m,6)];
   if(a==="Dreh"||a==="Dreh-Kipp")els.push(...(band==="R"?drehR():drehL()));
-  if(a==="Kipp"||a==="Dreh-Kipp")els.push(...apexTop());
-  if(a==="Klapp")els.push(...apexBottom());
+  if(a==="Dreh-Kipp")els.push(...apexTop());
+  if(a==="Kipp")els.push(...(band==="O"?apexBottom():apexTop()));
+  if(a==="Klapp")els.push(...(band==="U"?apexTop():apexBottom()));
   if(a==="Schiebe")els.push(L(x+m,cy,x+w-m,cy,7),L(x+w-m,cy,x+w-m-5,cy-3,8),L(x+w-m,cy,x+w-m-5,cy+3,9));
   return els;
 }
-
-// Fenstergeometrie – Zeilen-Modell, Feld antippen → auswählen
-function GeoEditor({geo,onChange,verglasungen,onJump,onSyncVg}){
-  const g=normalizeGeo(geo);
+// Wiederverwendbare Fensterzeichnung: Editor (interaktiv über sel/onSel), Vorlagen-Kachel (mini) und Messansicht (mini + highlightVg)
+function GeoSvg({geo,aspect,sel,onSel,verglasungen,highlightVg,mini}){
+  const g=normalizeGeo(geo),a=aspect||GEO_ASPECT_DEF,VW=a>=1?300:Math.round(300*a),VH=a>=1?Math.round(300/a):300,PAD=mini?4:8;
+  const vgNr=id=>{const v=(verglasungen||[]).find(x=>x.id===id);return v?v.nr:null;};
+  const ns=mini?{vectorEffect:"non-scaling-stroke"}:{};
+  const rects=[],seps=[],syms=[],grp=[];
+  geoLayout(g.tree,PAD,PAD,VW-2*PAD,VH-2*PAD).forEach(b=>{
+    if(b.sep){if(b.sep==="stulp")seps.push(<line key={"s"+b.path} x1={b.x+b.w/2} y1={b.y} x2={b.x+b.w/2} y2={b.y+b.h} stroke={C.tx2} strokeWidth={1} strokeDasharray="5 3" style={{pointerEvents:"none",...ns}}/>);
+      else seps.push(<rect key={"s"+b.path} x={b.x} y={b.y} width={b.w} height={b.h} fill={C.tx2} style={{pointerEvents:"none"}}/>);return;}
+    const n=b.node;
+    if(!b.leaf){if(n.role&&!mini)grp.push(<text key={"g"+b.path} x={b.x+b.w-3} y={b.y+9} textAnchor="end" fill={C.tx3} fontSize="8" style={{pointerEvents:"none"}}>{n.role}</text>);
+      if(sel!=null&&sel===b.path)grp.push(<rect key={"q"+b.path} x={b.x+1} y={b.y+1} width={Math.max(0,b.w-2)} height={Math.max(0,b.h-2)} fill="none" stroke={C.ac} strokeWidth={2} strokeDasharray="6 4" style={{pointerEvents:"none"}}/>);return;}
+    const hl=(sel!=null&&sel===b.path)||(!!highlightVg&&n.vg===highlightVg),vn=n.vg?vgNr(n.vg):null;
+    rects.push(<rect key={"r"+b.path} x={b.x} y={b.y} width={b.w} height={b.h} fill={n.art?C.acBg:C.sf2} stroke={hl?C.ac:C.bd} strokeWidth={hl?2.5:1.4} onClick={onSel?()=>onSel(b.path,n):undefined} style={{cursor:onSel?"pointer":"default",...ns}}/>);
+    syms.push(...openingSymbol(n,b.x,b.y,b.w,b.h,b.path,mini));
+    if(!mini&&b.w>=28&&b.h>=18){
+      if(n.art)syms.push(<text key={"a"+b.path} x={b.x+3} y={b.y+11} fill={C.tx2} fontSize="9" style={{pointerEvents:"none"}}>{FEN_AB[n.art]||""}{n.band?"·"+n.band:""}</text>);
+      if(n.role)syms.push(<text key={"o"+b.path} x={b.x+b.w-3} y={b.y+11} textAnchor="end" fill={C.tx3} fontSize="8" style={{pointerEvents:"none"}}>{n.role}</text>);}
+    if(vn!=null)syms.push(<text key={"v"+b.path} x={b.x+b.w/2} y={mini?b.y+b.h/2+8:b.y+b.h-5} textAnchor="middle" fill={C.ac} fontSize={mini?22:11} style={{pointerEvents:"none",fontWeight:800}}>V{vn}</text>);
+  });
+  return <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",maxHeight:mini?140:380,display:"block",margin:"0 auto",touchAction:"manipulation"}}>{rects}{seps}{syms}{grp}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={mini?1.5:4} rx={4} style={{pointerEvents:"none",...ns}}/></svg>;
+}
+// Fenstergeometrie – Teilungsbaum: Vorlage wählen oder Felder antippen (Öffnungsart, Bandseite, Rolle, Verglasung) und senkrecht/waagrecht teilen
+function GeoEditor({geo,onChange,verglasungen,onJump,onSyncVg,aspect}){
+  const g=normalizeGeo(geo),vgs=verglasungen||[];
   const[sel,setSel]=useState(null);
-  const rows=g.rows;
-  const vgs=verglasungen||[];
-  const vgNr=id=>{const v=vgs.find(x=>x.id===id);return v?v.nr:null;};
-  const setCols=(ri,cols)=>{const nr=rows.map((r,i)=>i===ri?{...r,cols,w:Array.from({length:cols},(_,j)=>(r.w&&r.w[j])||1)}:r);onChange({...g,rows:nr,cells:pruneCells(nr,g.cells)});};
-  const setH=(ri,dh)=>onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,h:Math.max(1,(r.h||1)+dh)}:r)});
-  const setW=(ri,ci,dw)=>{const row=rows[ri],cols=row.cols||1,w=Array.from({length:cols},(_,j)=>(row.w&&row.w[j])||1);w[ci]=Math.max(1,(w[ci]||1)+dw);onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,w}:r)});};
-  const addRow=(top,role)=>onChange({...g,rows:top?[{h:1,cols:1,role},...rows]:[...rows,{h:1,cols:1,role}],cells:top?shiftCells(g.cells,1):g.cells});
-  const setRole=(ri,role)=>onChange({...g,rows:rows.map((r,i)=>i===ri?{...r,role}:r)});
-  const delRow=ri=>{if(rows.length<=1)return;onChange({...g,rows:rows.filter((_,i)=>i!==ri),cells:dropRowCells(ri,g.cells)});setSel(null);};
-  const setCell=(key,patch)=>onChange({...g,cells:{...g.cells,[key]:{art:"",band:"",...(g.cells[key]||{}),...patch}}});
-  const VW=300,PAD=8,MULL=2,BAR=1.4;
-  const totalH=rows.reduce((s,r)=>s+(r.h||1),0)||1,AREA_H=Math.max(120,rows.length*46);
-  const innerW=VW-2*PAD,x0=PAD,VH=AREA_H+2*PAD;
-  const rects=[],syms=[];let yy=PAD;
-  rows.forEach((row,ri)=>{const rh=(row.h||1)/totalH*AREA_H,cols=row.cols||1,ws=(row.w&&row.w.length===cols)?row.w:Array(cols).fill(1),wsum=ws.reduce((a,b)=>a+b,0)||cols,avail=innerW-(cols-1)*MULL;let cx=x0;
-    for(let c=0;c<cols;c++){const cw=ws[c]/wsum*avail,x=cx,y=yy,key=ri+":"+c,cell=g.cells[key]||{},isSel=sel===key,vn=cell.vg?vgNr(cell.vg):null;
-      rects.push(<rect key={"r"+key} x={x} y={y} width={cw} height={rh} fill={cell.art?C.acBg:C.sf2} stroke={isSel?C.ac:C.bd} strokeWidth={isSel?2.5:BAR} onClick={()=>setSel(key)} style={{cursor:"pointer"}}/>);
-      syms.push(...openingSymbol(cell,x,y,cw,rh,key));
-      if(cell.art)syms.push(<text key={"a"+key} x={x+3} y={y+11} fill={C.tx2} fontSize="9" style={{pointerEvents:"none"}}>{FEN_AB[cell.art]||""}{cell.band?"·"+cell.band:""}</text>);
-      if(vn)syms.push(<text key={"v"+key} x={x+cw/2} y={y+rh-5} textAnchor="middle" fill={C.ac} fontSize="11" style={{pointerEvents:"none",fontWeight:800}}>V{vn}</text>);
-      cx+=cw+MULL;}
-    yy+=rh;});
-  const seg=(val,arr,on)=><div style={{display:"flex",gap:2}}>{arr.map(n=><button key={n} style={{...$.btn,...$.bS,padding:"3px 7px",fontSize:11,...(val===n?$.bP:$.bO)}} onClick={()=>on(n)}>{n}</button>)}</div>;
-  const sb={...$.btn,...$.bO,padding:"2px 8px",fontSize:13,minWidth:26};
+  const[showTpl,setShowTpl]=useState(geoIsLeaf(g.tree)&&!g.tree.art&&!g.tree.role&&!g.tree.vg);
+  const cur=sel!=null&&geoNode(g,sel)?sel:null,node=cur!=null?geoNode(g,cur):null;   // ungültige Auswahl (Fremdänderung) wirkt wie „nichts gewählt"
+  const leaves=geoLeaves(g),a=aspect||GEO_ASPECT_DEF,VW=a>=1?300:Math.round(300*a),VH=a>=1?Math.round(300/a):300;
+  const box=cur!=null?geoLayout(g.tree,8,8,VW-16,VH-16).find(b=>b.path===cur):null,depth=cur?cur.split(".").length:0;
+  const canSplit=dir=>!!(node&&geoIsLeaf(node)&&depth<GEO_MAX_DEPTH&&box&&(dir==="v"?box.w:box.h)>=24);
+  const upd=(ng,nextSel)=>{onChange(ng);if(nextSel!==undefined)setSel(nextSel);};
+  const gb={...$.btn,...$.bS,minHeight:36,padding:"6px 10px",fontSize:12};
+  const parentPath=cur?geoParentPath(cur):null,parent=cur?geoNode(g,parentPath):null,pidx=cur?geoIdx(cur):0,leafIdx=cur!=null?leaves.findIndex(l=>l.path===cur):-1;
+  const stegBtns=(path,val)=>[["pfosten","Pfosten"],["stulp","Stulp"]].map(([k,l])=><button key={k} style={{...gb,...(val===k?$.bP:$.bO)}} onClick={()=>upd(geoSetNode(g,path,{steg:k}))}>{l}</button>);
   return <div>
-    <div style={{...$.lbl,marginBottom:4}}>Fensteraufbau (oben → unten)</div>
-    {rows.map((row,ri)=><div key={ri} style={{border:`1px solid ${C.bd}`,borderRadius:8,padding:8,marginBottom:6}}>
-      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-        <select style={{...$.sel,...$.selS,flex:1}} value={row.role||""} onChange={e=>setRole(ri,e.target.value)}><option value="">Feld {ri+1}</option>{ROW_ROLES.map(o=><option key={o}>{o}</option>)}</select>
-        {rows.length>1&&<button style={{...sb,color:C.err,borderColor:C.err+"60"}} onClick={()=>delRow(ri)}>🗑</button>}
-      </div>
-      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-        <span style={{fontSize:11,color:C.tx2}}>Flügel</span>{seg(row.cols||1,[1,2,3,4],n=>setCols(ri,n))}
-        <span style={{fontSize:11,color:C.tx2,marginLeft:4}}>Höhe-Anteil</span><button style={sb} onClick={()=>setH(ri,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{row.h||1}</span><button style={sb} onClick={()=>setH(ri,1)}>+</button>
-      </div>
-    </div>)}
-    <div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Höhe-Anteil = relatives Höhenverhältnis der Felder (z.B. Oberlicht 1, Hauptfenster 3).</div>
-    <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(true,"Oberlicht")}>+ Oberlicht</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(false,"Brüstung")}>+ Brüstung</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:1}} onClick={()=>addRow(false,"")}>+ Feld</button>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>Fensteraufbau</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setShowTpl(x=>!x)}>Vorlagen {showTpl?"▴":"▾"}</button></div>
+    {showTpl&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(76px,1fr))",gap:6,marginBottom:8}}>{GEO_TEMPLATES.map(t=><div key={t.id} onClick={()=>{if(geoHasContent(g)&&!confirm("Vorhandene Öffnungsarten und Verglasungs-Zuordnungen werden durch die Vorlage ersetzt. Fortfahren?"))return;upd(t.make(),null);setShowTpl(false);}} style={{border:`1px solid ${C.bd}`,borderRadius:8,padding:4,cursor:"pointer",background:C.sf2,textAlign:"center"}}><GeoSvg mini geo={t.make()} aspect={t.aspect||GEO_ASPECT_DEF}/><div style={{fontSize:9,color:C.tx2,marginTop:2,lineHeight:1.2}}>{t.name}</div></div>)}</div>}
+    <div style={{display:"flex",gap:6,marginBottom:6}}>
+      <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,true,"Oberlicht");upd(ng,"0");}}>+ Oberlicht</button>
+      <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,false,"Brüstung");upd(ng,String(ng.tree.kids.length-1));}}>+ Brüstung</button>
     </div>
-    <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",display:"block",touchAction:"manipulation",marginBottom:6}}>{rects}{syms}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={4} rx={4}/></svg>
-    {sel!=null?(()=>{const pr=sel.split(":"),ri=+pr[0],ci=+pr[1],row=rows[ri]||{cols:1},cols=row.cols||1,cell=g.cells[sel]||{},showBand=cell.art==="Dreh"||cell.art==="Dreh-Kipp",curW=(row.w&&row.w[ci])||1;
-      return <div style={{padding:8,background:C.sf2,borderRadius:8,marginBottom:6}}>
-        <div style={{fontSize:11,color:C.tx2,marginBottom:5}}>{row.role||("Feld "+(ri+1))} · Spalte {ci+1}</div>
-        <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:6}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...$.btn,...$.bS,padding:"4px 7px",fontSize:11,...((cell.art||"")===t?$.bP:$.bO)}} onClick={()=>setCell(sel,{art:t})}>{t||"leer"}</button>)}</div>
-        {showBand&&<div style={{display:"flex",gap:4,alignItems:"center",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{[["L","Links"],["R","Rechts"]].map(([v,l])=><button key={v} style={{...$.btn,...$.bS,padding:"4px 9px",...(cell.band===v?$.bP:$.bO)}} onClick={()=>setCell(sel,{band:v})}>{l}</button>)}</div>}
-        {cols>1&&<div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Spaltenbreite:</span><button style={sb} onClick={()=>setW(ri,ci,-1)}>−</button><span style={{fontSize:12,minWidth:14,textAlign:"center"}}>{curW}</span><button style={sb} onClick={()=>setW(ri,ci,1)}>+</button></div>}
-        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}><span style={{fontSize:11,color:C.tx2}}>Verglasung:</span>{vgs.map(v=><button key={v.id} style={{...$.btn,...$.bS,padding:"4px 8px",...(cell.vg===v.id?$.bP:$.bO)}} onClick={()=>setCell(sel,{vg:v.id})}>V{v.nr}</button>)}{cell.vg&&<button style={{...$.btn,...$.bS,...$.bO,padding:"4px 8px"}} onClick={()=>setCell(sel,{vg:""})}>—</button>}{cell.vg&&onJump&&<button style={{...$.btn,...$.bS,...$.bP,padding:"4px 8px"}} onClick={()=>onJump(cell.vg)}>→ öffnen</button>}{!vgs.length&&<span style={{fontSize:10,color:C.tx3}}>keine Verglasungen angelegt</span>}</div>
-      </div>;})()
-    :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Feld antippen → Öffnungsart, Bandseite &amp; Verglasung wählen</div>}
-    {onSyncVg&&(()=>{const fc=rows.reduce((s,r)=>s+(r.cols||1),0),lc=Object.values(g.cells||{}).filter(c=>c&&c.vg).length;return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,marginBottom:6,flexWrap:"wrap"}}><span style={{fontSize:10,color:(vgs.length!==fc)?C.warn:C.tx3}}>Verglasungen: {vgs.length} · Felder: {fc} · verknüpft: {lc}</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px"}} onClick={onSyncVg}>aus Geometrie übernehmen</button></div>;})()}
+    <GeoSvg geo={g} aspect={aspect} sel={cur} onSel={p=>setSel(p)} verglasungen={vgs}/>
+    {node?<div style={{padding:8,background:C.sf2,borderRadius:8,margin:"6px 0"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,marginBottom:6}}>
+        <span style={{fontSize:11,color:C.tx2}}>{geoIsLeaf(node)?`Feld ${leafIdx+1}/${leaves.length}`:`Gruppe (${geoLeaves({tree:node}).length} Felder)`}{parent&&parent.role?` · in ${parent.role}`:""}</span>
+        <span style={{display:"flex",gap:4}}>{cur!==""&&<button style={{...gb,...$.bO}} onClick={()=>setSel(parentPath)}>▲ Gruppe</button>}<button style={{...gb,...$.bO}} onClick={()=>setSel(null)}>✕</button></span>
+      </div>
+      {geoIsLeaf(node)&&<>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...gb,flex:"1 1 30%",...((node.art||"")===t?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{art:t}))}>{t||"leer"}</button>)}</div>
+        {GEO_BANDS[node.art]&&<div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{GEO_BANDS[node.art].map(b=><button key={b} style={{...gb,...(node.band===b?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{band:b}))}>{BAND_L[b]}</button>)}<button style={{...gb,...(node.band?$.bO:$.bP)}} onClick={()=>upd(geoSetLeaf(g,cur,{band:""}))}>—</button></div>}
+        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Verglasung:</span>{vgs.map(v=><button key={v.id} style={{...gb,...(node.vg===v.id?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{vg:v.id}))}>V{v.nr}</button>)}{node.vg&&<button style={{...gb,...$.bO}} onClick={()=>upd(geoSetLeaf(g,cur,{vg:""}))}>—</button>}{node.vg&&onJump&&<button style={{...gb,...$.bP}} onClick={()=>onJump(node.vg)}>→ öffnen</button>}{!vgs.length&&<span style={{fontSize:10,color:C.tx3}}>keine Verglasungen angelegt</span>}</div>
+        <div style={{display:"flex",gap:4,marginBottom:6}}>
+          <button style={{...gb,...$.bO,flex:1,opacity:canSplit("v")?1:0.4}} disabled={!canSplit("v")} onClick={()=>upd(geoSplit(g,cur,"v"),geoPath(cur,0))}>⫿ senkrecht teilen</button>
+          <button style={{...gb,...$.bO,flex:1,opacity:canSplit("h")?1:0.4}} disabled={!canSplit("h")} onClick={()=>upd(geoSplit(g,cur,"h"),geoPath(cur,0))}>⫗ waagrecht teilen</button>
+        </div>
+      </>}
+      <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Rolle:</span><select style={{...$.sel,...$.selS,flex:1}} value={node.role||""} onChange={e=>upd(geoSetNode(g,cur,{role:e.target.value}))}><option value="">— keine —</option>{ROW_ROLES.map(o=><option key={o}>{o}</option>)}</select></div>
+      {parent&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Anteil:</span><button style={{...gb,...$.bO}} onClick={()=>upd(geoSetWeight(g,cur,-1))}>−</button><span style={{fontSize:12,minWidth:44,textAlign:"center"}}>{parent.w[pidx]} von {parent.w.reduce((x,y)=>x+y,0)}</span><button style={{...gb,...$.bO}} onClick={()=>upd(geoSetWeight(g,cur,1))}>+</button>
+        {parent.dir==="v"&&<><span style={{fontSize:11,color:C.tx2,marginLeft:6}}>Trennung:</span>{stegBtns(parentPath,parent.steg)}</>}</div>}
+      {!geoIsLeaf(node)&&node.dir==="v"&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Trennung in dieser Gruppe:</span>{stegBtns(cur,node.steg)}</div>}
+      {parent&&<button style={{...gb,...$.bO,color:C.err,borderColor:C.err+"60"}} onClick={()=>upd(geoRemove(g,cur),parentPath)}>🗑 {geoIsLeaf(node)?"Feld":"Gruppe"} entfernen</button>}
+    </div>
+    :<div style={{fontSize:10,color:C.tx3,margin:"6px 0"}}>Vorlage wählen oder Feld antippen → Öffnungsart, Bandseite, Verglasung, teilen</div>}
+    {onSyncVg&&(()=>{const fc=leaves.length,lc=leaves.filter(l=>l.node.vg).length;return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,marginBottom:6,flexWrap:"wrap"}}><span style={{fontSize:10,color:(vgs.length!==fc)?C.warn:C.tx3}}>Verglasungen: {vgs.length} · Felder: {fc} · verknüpft: {lc}</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px"}} onClick={onSyncVg}>aus Geometrie übernehmen</button></div>;})()}
     <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:10,color:C.tx2}}>{FEN_TYPEN.map(t=><span key={t}><b style={{color:C.tx}}>{FEN_AB[t]}</b> {t}</span>)}</div>
   </div>;
 }
@@ -817,10 +910,11 @@ function App(){
 
   const addFen=(rId,nr,va)=>{mut(p=>{const r=gR(p,rId);if(!r)return;if(p.modus==="fenster"){r.fenster.push({id:uid(),nr:nr||`F${nextNr(r,"F")}`,verglasungen:Array.from({length:va||1},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),data:{},sources:{},photos:[],notizen:""});}else{r.fenster.push({id:uid(),nr:`V${nextNr(r,"V")}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});}});};
   const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({id:uid(),nr:(f.verglasungen.length||0)+1,messungen:[],data:{},sources:{},photos:[],notizen:""});}});
-  const syncVgFromGeo=(rId,fId)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(!f)return;const g=f.geometrie?normalizeGeo(f.geometrie):null;if(!g)return;const pos=[];g.rows.forEach((row,ri)=>{for(let c=0;c<(row.cols||1);c++)pos.push(ri+":"+c);});if(!f.verglasungen)f.verglasungen=[];while(f.verglasungen.length<pos.length)f.verglasungen.push({id:uid(),nr:f.verglasungen.length+1,messungen:[],data:{},sources:{},photos:[],notizen:""});const cells={...g.cells};pos.forEach((k,i)=>{cells[k]={art:"",band:"",...(cells[k]||{}),vg:f.verglasungen[i].id};});f.geometrie={...g,cells};});flash("Aus Geometrie übernommen");};
-  const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];});if(f.geometrie&&f.geometrie.cells)Object.keys(f.geometrie.cells).forEach(k=>{const cl=f.geometrie.cells[k];if(cl.vg)cl.vg=map[cl.vg]||"";});});return c;};
+  // „aus Geometrie übernehmen": fehlende Verglasungen anlegen (nie löschen), Felder in Lesereihenfolge positional zuordnen
+  const syncVgFromGeo=(rId,fId)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(!f||!f.geometrie)return;const g=normalizeGeo(f.geometrie),n=geoCellCount(g);if(!f.verglasungen)f.verglasungen=[];while(f.verglasungen.length<n)f.verglasungen.push({id:uid(),nr:f.verglasungen.length+1,messungen:[],data:{},sources:{},photos:[],notizen:""});f.geometrie=geoMapLeaves(g,(l,path,i)=>({...l,vg:f.verglasungen[i].id}));});flash("Aus Geometrie übernommen");};
+  const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];});if(f.geometrie)f.geometrie=geoRemapVg(f.geometrie,map);});return c;};
   const dupRoom=(rId,count)=>{mut(p=>{const idx=p.rooms.findIndex(x=>x.id===rId);if(idx<0)return;const r=p.rooms[idx];const N=Math.max(1,count|0||1);const taken=new Set(p.rooms.map(x=>x.raumnummer));const baseNm=r.raumnummer||r.raumId||"Raum";let n=2;for(let i=0;i<N;i++){const c=cloneRoomData(r);c.geschoss=r.geschoss;let nm;do{nm=`${baseNm} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.raumnummer=nm;p.rooms.splice(idx+1+i,0,c);}});flash("Raum dupliziert");};
-  const cloneFenData=f=>{const c=JSON.parse(JSON.stringify(f));c.id=uid();c.photos=[];const map={};(c.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];});if(c.geometrie&&c.geometrie.cells)Object.keys(c.geometrie.cells).forEach(k=>{const cl=c.geometrie.cells[k];if(cl.vg)cl.vg=map[cl.vg]||"";});return c;};
+  const cloneFenData=f=>{const c=JSON.parse(JSON.stringify(f));c.id=uid();c.photos=[];const map={};(c.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];});if(c.geometrie)c.geometrie=geoRemapVg(c.geometrie,map);return c;};
   const dupFen=(rId,fId,count)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const idx=r.fenster.findIndex(x=>x.id===fId);if(idx<0)return;const src=r.fenster[idx];const N=Math.max(1,count|0||1);const taken=new Set(r.fenster.map(x=>x.nr));const base=src.nr||`F${idx+1}`;let n=2;for(let i=0;i<N;i++){const c=cloneFenData(src);let nm;do{nm=`${base} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.nr=nm;r.fenster.splice(idx+1+i,0,c);}});flash("Fenster dupliziert");};
   const quickAdd=(rId,n)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const s=nextNr(r,"V");for(let i=0;i<n;i++)r.fenster.push({id:uid(),nr:`V${s+i}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});});flash(`+${n}`);};
 
@@ -829,7 +923,7 @@ function App(){
     const f=gF(r,fId);if(!f)return;
     if(f.isVg||f.verglasungen.length<=1){r.fenster=r.fenster.filter(x=>x.id!==fId);} // remove whole pseudo-fenster or last vg
     else{f.verglasungen=f.verglasungen.filter(v=>v.id!==vId);f.verglasungen.forEach((v,i)=>{v.nr=i+1;});
-      if(f.geometrie&&f.geometrie.cells)Object.values(f.geometrie.cells).forEach(c=>{if(c.vg===vId)c.vg="";});} // Geometrie-Verknüpfung lösen
+      if(f.geometrie)f.geometrie=geoUnlinkVg(f.geometrie,vId);} // Geometrie-Verknüpfung lösen
   });};
 
   // Add extra Verglasung to current room (from measure view); returns the new entry
@@ -897,7 +991,7 @@ function App(){
       <ol style={{margin:0,paddingLeft:18,fontSize:13,lineHeight:1.55}}>
         <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und Profil wählen.</li>
         <li>Optional <b>Gebäudeteile/Trakte</b> in der Einrichtung anlegen. <b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren, mit <b>✎</b> umbenennen.</li>
-        <li><b>Fenster</b> hinzufügen (auch mehrere identische auf einmal); optional die <b>Geometrie</b> skizzieren und Felder antippen → Öffnungsart, Bandseite, Verglasung.</li>
+        <li><b>Fenster</b> hinzufügen (auch mehrere identische auf einmal); optional die <b>Geometrie</b> skizzieren: Vorlage wählen, Felder antippen → Öffnungsart, Bandseite, Verglasung; Felder senkrecht/waagrecht teilen, Oberlicht/Brüstung ergänzen.</li>
         <li><b>Verglasung</b> öffnen → Daten erfassen (Ug/g/ψ mit Standardwerten), optional <b>Messungen</b> (Gasfüllgrad, Ug gemessen, Taupunkt – beliebig viele Werte), <b>Fotos</b> (📷 Kamera / 🖼️ Galerie; antippen zum Vergrößern).</li>
         <li><b>Thermische Standardwerte</b> global oder pro Projekt unter <b>⚙ Einstellungen</b> anpassen.</li>
         <li><b>Export</b> als Excel/CSV; <b>Sicherung</b> als ZIP (Daten + Fotos) oder JSON (nur Daten).</li>
@@ -1095,7 +1189,7 @@ function App(){
       else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster umbenennen" onClick={()=>{const n=prompt("Fenster-Nr. / Bezeichnung",f.nr);if(n!=null)renFen(rm.id,f.id,n);}}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button></div></div>
         {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>)}</div>}
         {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
-        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>}
+        {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>}
         {isA("rahmenmasse")&&<div style={{marginBottom:8}}><div style={$.cardT}>Rahmen-Abmessungen</div><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
@@ -1147,6 +1241,11 @@ function App(){
 
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div className="body" style={$.body}>
     <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} erfasst</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
+    {!isV&&isA("geometrie")&&f.geometrie&&(geoHasContent(f.geometrie)||geoCellCount(f.geometrie)>1)&&(()=>{const lf=geoLeaves(f.geometrie).find(l=>l.node.vg===v.id);  // Mini-Skizze: Feld dieser Verglasung hervorgehoben, Tippen springt zur anderen Verglasung
+      return <div style={{...$.card,padding:10,display:"flex",gap:12,alignItems:"center"}}>
+        <div style={{width:130,flexShrink:0}}><GeoSvg mini geo={f.geometrie} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} verglasungen={f.verglasungen} highlightVg={v.id} onSel={(pth,n)=>{if(n.vg&&n.vg!==v.id){const i=all.findIndex(x=>x.v.id===n.vg);if(i>=0)navTo(i);}}}/></div>
+        <div style={{fontSize:11,color:C.tx2,lineHeight:1.5}}>{lf?<span>Feld: <b style={{color:C.tx}}>{lf.node.role||"Hauptfeld"}</b>{lf.node.art?` · ${lf.node.art}${lf.node.band?" ("+BAND_L[lf.node.band]+")":""}`:""}</span>:<span>Diese Verglasung ist keinem Feld zugeordnet (im Fenster „aus Geometrie übernehmen").</span>}<br/><span style={{color:C.tx3}}>Feld antippen = zu dieser Verglasung springen</span></div>
+      </div>;})()}
     {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>)}</div>}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
     <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
