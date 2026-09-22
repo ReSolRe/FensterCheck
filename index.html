@@ -28,13 +28,21 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
   .body{column-count:3}
 }
 </style>
+</head>
+<body>
+<div id="root"><div id="boot" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:#8a9bb5;font-size:14px"><div style="font-size:22px;font-weight:800;color:#e4eaf2">🔍 FensterCheck</div><div id="bootmsg">wird geladen…</div></div></div>
+<script>
+// Start-Diagnose: zeigt Lade- und Startfehler auf dem Bildschirm statt einer leeren Seite
+(function(){var shown=false;function show(m){var b=document.getElementById("bootmsg");if(b){b.innerHTML=m;shown=true;}}
+window.addEventListener("error",function(e){if(!document.getElementById("boot"))return;var t=e.target;
+  if(t&&t.tagName==="SCRIPT"&&t.src){show("⚠ Programmteil konnte nicht geladen werden:<br><small>"+t.src.split("/").pop()+"</small><br><br>Internetverbindung prüfen und neu laden.");return;}
+  show("⚠ Fehler beim Start:<br><small>"+String(e.message||"unbekannt").replace(/</g,"&lt;")+"</small><br><br>Bitte neu laden. Bleibt der Fehler, Browser aktualisieren.");},true);
+setTimeout(function(){if(document.getElementById("boot")&&!shown)show("Das Laden dauert ungewöhnlich lange…<br><small>Beim ersten Öffnen werden ca. 3.5 MB geladen.</small>");},15000);})();
+</script>
 <script src="./lib/react.production.min.js"></script>
 <script src="./lib/react-dom.production.min.js"></script>
 <script src="./lib/babel.min.js"></script>
 <script src="./lib/xlsx.full.min.js"></script>
-</head>
-<body>
-<div id="root"></div>
 <script type="text/babel" data-type="module">
 const {useState,useEffect,useRef,useCallback}=React;
 const DB_NAME="fenstercheck_db",STORE="projects";
@@ -61,7 +69,7 @@ const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
 const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
 const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
 const ROW_ROLES=["Hauptfenster","Oberlicht","Brüstung","Seitenteil","Zwischenfeld"];
-const APP_VERSION="v16 · Juli 2026";
+const APP_VERSION="v17 · September 2026";
 const APP_REPO="https://github.com/ReSolRe/FensterCheck";
 
 // Editierbare thermische Standardwerte (global + Projekt-Override)
@@ -162,11 +170,104 @@ const PRESETS={
   voll:{name:"Voll",desc:"Alle Felder",fields:Object.keys(FIELDS)},
 };
 
-// IndexedDB
-function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,4);r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE,{keyPath:"id"});};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);})}
-async function dbAll(){const db=await openDB();return new Promise((r,j)=>{const t=db.transaction(STORE,"readonly");const s=t.objectStore(STORE).getAll();s.onsuccess=()=>r(s.result);s.onerror=()=>j(s.error);})}
-async function dbPut(d){const db=await openDB();return new Promise((r,j)=>{const t=db.transaction(STORE,"readwrite");const s=t.objectStore(STORE).put(d);s.onsuccess=()=>r(s.result);s.onerror=()=>j(s.error);})}
-async function dbDel(k){const db=await openDB();return new Promise((r,j)=>{const t=db.transaction(STORE,"readwrite");const s=t.objectStore(STORE).delete(k);s.onsuccess=()=>r();s.onerror=()=>j(s.error);})}
+// IndexedDB – eine gemeinsame Verbindung; Stores: projects (Projektdaten) + photos (Bild-Blobs).
+// Fotos liegen bewusst NICHT im Projektobjekt: jede Änderung klont das ganze Projekt.
+const PSTORE="photos";
+let _dbP=null;
+function openDB(){if(_dbP)return _dbP;_dbP=new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,5);
+  r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE,{keyPath:"id"});if(!db.objectStoreNames.contains(PSTORE))db.createObjectStore(PSTORE,{keyPath:"id"});};
+  r.onsuccess=()=>{const db=r.result;db.onversionchange=()=>{db.close();_dbP=null;};res(db);};
+  r.onerror=()=>{_dbP=null;rej(r.error);};
+  r.onblocked=()=>alert("FensterCheck ist noch in einem anderen Tab/Fenster geöffnet. Bitte dort schließen und hier neu laden.");});return _dbP;}
+function idb(store,mode,fn){return openDB().then(db=>new Promise((res,rej)=>{const t=db.transaction(store,mode);const rq=fn(t.objectStore(store));let out;if(rq)rq.onsuccess=()=>{out=rq.result;};t.oncomplete=()=>res(out);t.onerror=()=>rej(t.error);t.onabort=()=>rej(t.error||new Error("Speichern abgebrochen (Speicher voll?)"));}));}
+const dbAll=()=>idb(STORE,"readonly",s=>s.getAll());
+const dbPut=d=>idb(STORE,"readwrite",s=>s.put(d));
+const dbDel=k=>idb(STORE,"readwrite",s=>s.delete(k));
+const phPut=rec=>idb(PSTORE,"readwrite",s=>s.put(rec));
+const phGet=id=>idb(PSTORE,"readonly",s=>s.get(id));
+const phDel=ids=>ids&&ids.length?idb(PSTORE,"readwrite",s=>{ids.forEach(id=>s.delete(id));}).catch(()=>{}):Promise.resolve();
+const phKeys=()=>idb(PSTORE,"readonly",s=>s.getAllKeys());
+
+// Fotos: Vollbild (max. PH_MAX px, JPEG) + Vorschaubild als Blobs im photos-Store.
+// Im Projekt steht nur {id,zeit,w,h,kb,isStempel?}. Alte Fotos haben noch "data" (DataURL) und werden migriert.
+const PH_MAX=1920,PH_Q=0.82,TH_MAX=320,TH_Q=0.7;
+function loadImg(src){return new Promise((res,rej)=>{const img=new Image();const isB=src instanceof Blob;const u=isB?URL.createObjectURL(src):src;
+  img.onload=()=>{if(isB)URL.revokeObjectURL(u);res(img);};img.onerror=()=>{if(isB)URL.revokeObjectURL(u);rej(new Error("Bild konnte nicht gelesen werden"));};img.src=u;});}
+function scaledCanvas(img,max){const W=img.naturalWidth||img.width,H=img.naturalHeight||img.height;const s=Math.min(1,max/Math.max(W,H));const c=document.createElement("canvas");c.width=Math.max(1,Math.round(W*s));c.height=Math.max(1,Math.round(H*s));c.getContext("2d").drawImage(img,0,0,c.width,c.height);return c;}
+const toJpeg=(c,q)=>new Promise((res,rej)=>c.toBlob(b=>b?res(b):rej(new Error("Bild konnte nicht umgewandelt werden")),"image/jpeg",q));
+function dataURLtoBlob(d){const i=d.indexOf(",");const type=d.slice(5,i).split(";")[0]||"image/jpeg";const bin=atob(d.slice(i+1));const u=new Uint8Array(bin.length);for(let k=0;k<bin.length;k++)u[k]=bin.charCodeAt(k);return new Blob([u],{type});}
+// Neues Foto aus Kamera/Galerie verkleinern, speichern und Projekt-Metadaten liefern
+async function storeNewPhoto(file){const img=await loadImg(file);const full=scaledCanvas(img,PH_MAX);const blob=await toJpeg(full,PH_Q);const tblob=await toJpeg(scaledCanvas(img,TH_MAX),TH_Q);const id=uid();
+  await phPut({id,blob,tblob,w:full.width,h:full.height});return {id,zeit:new Date().toISOString(),w:full.width,h:full.height,kb:Math.round(blob.size/1024)};}
+// Vorhandenes Bild (Blob oder DataURL) ohne Neukodierung übernehmen – immer mit neuer ID (Migration/Import)
+async function storeExistingPhoto(meta,src){const blob=src instanceof Blob?src:dataURLtoBlob(src);let w=meta.w,h=meta.h,tblob=null;
+  try{const img=await loadImg(blob);w=img.naturalWidth;h=img.naturalHeight;tblob=await toJpeg(scaledCanvas(img,TH_MAX),TH_Q);}catch(e){}
+  const id=uid();await phPut({id,blob,tblob,w,h});const m={...meta,id,w,h,kb:Math.round(blob.size/1024)};delete m.data;delete m.file;return m;}
+async function photoBlob(ph){if(ph.data)return dataURLtoBlob(ph.data);const r=await phGet(ph.id);return r&&r.blob||null;}
+function photoLists(p){const out=[];(p.rooms||[]).forEach(r=>{out.push(r);(r.fenster||[]).forEach(f=>{out.push(f);(f.verglasungen||[]).forEach(v=>out.push(v));});});return out.filter(o=>Array.isArray(o.photos));}
+// Foto-IDs in einem Projekt/Raum/Fenster/Verglasungs-Teilbaum (nur Store-Fotos)
+function photoIdsIn(o){const s=[];const walk=x=>{if(!x)return;(x.photos||[]).forEach(ph=>{if(ph&&!ph.data)s.push(ph.id);});(x.rooms||[]).forEach(walk);(x.fenster||[]).forEach(walk);(x.verglasungen||[]).forEach(walk);};walk(o);return s;}
+const legacyCount=p=>photoLists(p).reduce((s,o)=>s+o.photos.filter(ph=>ph&&ph.data).length,0);
+async function migratePhotos(p,onStep){for(const o of photoLists(p)){const out=[];for(const ph of o.photos){if(ph&&ph.data){try{out.push(await storeExistingPhoto(ph,ph.data));}catch(e){out.push(ph);}onStep&&onStep();}else out.push(ph);}o.photos=out;}}
+// Nicht mehr referenzierte Bild-Blobs entfernen (z.B. nach Löschen von Räumen/Fenstern)
+async function gcPhotos(projects){try{const used=new Set();projects.forEach(p=>photoIdsIn(p).forEach(id=>used.add(id)));const keys=await phKeys();await phDel(keys.filter(k=>!used.has(k)));}catch(e){}}
+
+// Gebäudeteile (Trakte): Reihenfolge aus p.trakte, ergänzt um Namen, die nur an Räumen stehen
+function traktList(p){const t=[...((p&&p.trakte)||[])];((p&&p.rooms)||[]).forEach(r=>{if(r.trakt&&!t.includes(r.trakt))t.push(r.trakt);});return t;}
+// Räume für Export sortiert: Gebäudeteil → Geschoss (Reihenfolge wie in der App) → Erfassungsreihenfolge
+function sortedRooms(p){const tl=traktList(p);const ti=r=>{const i=tl.indexOf(r.trakt||"");return i<0?tl.length:i;};const fi=r=>{const i=FLOORS.indexOf(r.geschoss);return i<0?FLOORS.length:i;};
+  return (p.rooms||[]).map((r,i)=>({r,i})).sort((a,b)=>ti(a.r)-ti(b.r)||fi(a.r)-fi(b.r)||a.i-b.i).map(x=>x.r);}
+// Dateinamen der Fotos – gemeinsam für ZIP-Export und Excel-Fotoverzeichnis
+const fnSafe=s=>String(s||"").trim().replace(/[\\/:*?"<>|]+/g,"-").replace(/\s+/g,"_");
+function photoEntries(p){const out=[];let n=0;sortedRooms(p).forEach(room=>{const base=(room.trakt?fnSafe(room.trakt)+"_":"")+(fnSafe(room.geschoss)||"x")+"_"+(fnSafe(room.raumnummer||room.raumId)||"Raum");
+  (room.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Raum",room,fen:null,vg:null,typ:"Raum",name:`${base}_Raum_${n}.jpg`});});
+  (room.fenster||[]).forEach(fen=>{(fen.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Fenster",room,fen,vg:null,typ:"Fenster",name:`${base}_${fnSafe(fen.nr)}_${n}.jpg`});});
+    (fen.verglasungen||[]).forEach(vg=>{(vg.photos||[]).forEach(ph=>{n++;const t=ph.isStempel?"Stempel":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,name:`${base}_${fnSafe(fen.nr)}_V${vg.nr}_${t}_${n}.jpg`});});});});});return out;}
+
+// Minimaler ZIP-Writer (unkomprimiert): Fotos werden als Blob-Referenzen eingebunden statt in den Speicher kopiert
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
+function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+async function makeZip(entries,onStep){const enc=new TextEncoder(),parts=[],cd=[];let off=0,i=0;const d=new Date();
+  const dt=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1),dd=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
+  for(const e of entries){const nm=enc.encode(e.name);const blob=typeof e.data==="string"?new Blob([enc.encode(e.data)]):e.data;const crc=crc32(new Uint8Array(await blob.arrayBuffer()));const sz=blob.size;
+    const lh=new DataView(new ArrayBuffer(30));lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);lh.setUint16(6,0x0800,true);lh.setUint16(10,dt,true);lh.setUint16(12,dd,true);lh.setUint32(14,crc,true);lh.setUint32(18,sz,true);lh.setUint32(22,sz,true);lh.setUint16(26,nm.length,true);
+    parts.push(lh.buffer,nm,blob);
+    const ch=new DataView(new ArrayBuffer(46));ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);ch.setUint16(8,0x0800,true);ch.setUint16(12,dt,true);ch.setUint16(14,dd,true);ch.setUint32(16,crc,true);ch.setUint32(20,sz,true);ch.setUint32(24,sz,true);ch.setUint16(28,nm.length,true);ch.setUint32(42,off,true);
+    cd.push(ch.buffer,nm);off+=30+nm.length+sz;i++;onStep&&onStep(i,entries.length);}
+  const cdSize=cd.reduce((s,x)=>s+x.byteLength,0);const eo=new DataView(new ArrayBuffer(22));eo.setUint32(0,0x06054b50,true);eo.setUint16(8,entries.length,true);eo.setUint16(10,entries.length,true);eo.setUint32(12,cdSize,true);eo.setUint32(16,off,true);
+  return new Blob([...parts,...cd,eo.buffer],{type:"application/zip"});}
+// ZIP lesen: unkomprimierte Einträge werden nur als Datei-Ausschnitt referenziert; komprimierte über SheetJS/CFB
+async function readZip(file){const tl=Math.min(file.size,65557);const tail=new DataView(await file.slice(file.size-tl).arrayBuffer());let eo=-1;
+  for(let i=tl-22;i>=0;i--){if(tail.getUint32(i,true)===0x06054b50){eo=i;break;}}if(eo<0)throw new Error("keine gültige ZIP-Datei");
+  const n=tail.getUint16(eo+10,true),cdSize=tail.getUint32(eo+12,true),cdOff=tail.getUint32(eo+16,true);const cdv=new DataView(await file.slice(cdOff,cdOff+cdSize).arrayBuffer());const dec=new TextDecoder();const out=new Map();let p=0,packed=false;
+  for(let k=0;k<n&&p+46<=cdv.byteLength;k++){if(cdv.getUint32(p,true)!==0x02014b50)break;const method=cdv.getUint16(p+10,true),csz=cdv.getUint32(p+20,true),nl=cdv.getUint16(p+28,true),el=cdv.getUint16(p+30,true),cl=cdv.getUint16(p+32,true),lo=cdv.getUint32(p+42,true);
+    const name=dec.decode(new Uint8Array(cdv.buffer,p+46,nl));p+=46+nl+el+cl;if(name.endsWith("/"))continue;if(method!==0){packed=true;break;}
+    const lh=new DataView(await file.slice(lo,lo+30).arrayBuffer());const st=lo+30+lh.getUint16(26,true)+lh.getUint16(28,true);out.set(name,file.slice(st,st+csz));}
+  if(packed){const cfb=XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()),{type:"array"});out.clear();cfb.FullPaths.forEach((fp,i)=>{const e=cfb.FileIndex[i];if(e.type===2&&e.content&&!/Sh33tJ5/.test(fp))out.set(fp.replace(/^Root Entry\//,""),new Blob([e.content]));});}
+  return out;}
+// Projektdatei (ZIP oder JSON, auch alte JSON-Backups mit eingebetteten Fotos) lesen; Fotos landen mit neuen IDs im Store
+async function readProjectFile(file){const head=await file.slice(0,2).text();let d,files=null;
+  if(head==="PK"){files=await readZip(file);const jf=[...files.keys()].find(k=>/\.json$/i.test(k));if(!jf)throw new Error("ZIP enthält keine Projektdaten");d=JSON.parse(await files.get(jf).text());}
+  else d=JSON.parse(await file.text());
+  if(!d||!d.id||!Array.isArray(d.rooms))throw new Error("keine FensterCheck-Projektdatei");
+  for(const o of photoLists(d)){const out=[];for(const ph of o.photos){try{if(ph.data)out.push(await storeExistingPhoto(ph,ph.data));else if(ph.file&&files&&files.get(ph.file))out.push(await storeExistingPhoto(ph,files.get(ph.file)));}catch(e){}}o.photos=out;}
+  delete d._format;return d;}
+function download(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);}
+
+// Messungen je Verglasung: mehrere Werte je Messart. Alte Einträge ohne "typ" sind Gasfüllgrad.
+const MS_TYPES={
+  gas:{label:"Gasfüllgrad",short:"Gas",unit:"%",min:0,max:100},
+  ug:{label:"Ug gemessen",short:"Ug",unit:"W/m²K",min:0.2,max:6.5},
+  tp:{label:"Taupunkt",short:"TP",unit:"°C",min:-80,max:30,neg:true},
+};
+const MS_KEYS=Object.keys(MS_TYPES);
+const msTyp=m=>(m&&m.typ&&MS_TYPES[m.typ])?m.typ:"gas";
+const msOf=(v,t)=>((v&&v.messungen)||[]).filter(m=>msTyp(m)===t);
+const fmtMs=m=>m?`${m.wert} ${MS_TYPES[msTyp(m)].unit}`:"";
+function msStats(list){const w=list.map(m=>m.wert).filter(x=>typeof x==="number"&&!isNaN(x));if(!w.length)return null;const s=[...w].sort((a,b)=>a-b);const r=x=>Math.round(x*100)/100;
+  return {n:w.length,avg:r(w.reduce((a,b)=>a+b,0)/w.length),min:s[0],max:s[s.length-1],med:r(s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2)};}
+// Eine Verglasung gilt als "erfasst", wenn sie (oder ihr Fenster) dokumentiert ist – Messung, Foto, Daten oder Zustand.
+const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||Object.values(f?.data||{}).some(x=>x&&(""+x).trim())||!!f?.zustandRahmen;
 function parseCSV(text){const ls=text.trim().split(/\r?\n/);if(ls.length<2)return[];const h=ls[0].split(/[;,\t]/).map(x=>x.trim().toLowerCase());return ls.slice(1).map(l=>{const v=l.split(/[;,\t]/).map(x=>x.trim());const o={};h.forEach((x,i)=>{o[x]=v[i]||"";});return o;}).filter(r=>Object.values(r).some(v=>v));}
 
 // Export
@@ -182,73 +283,79 @@ function buildExport(p){
     ["Feuchte aussen [%rF]",p.feuchteAussen||""],["Feuchte innen [%rF]",p.feuchteInnen||""],
     ["Erstellt",p.erstellt?new Date(p.erstellt).toLocaleDateString("de-CH"):""],
     ["Geändert",p.geaendert?new Date(p.geaendert).toLocaleString("de-CH"):""],
-    ["Modus",p.modus==="fenster"?"Fenster+Verglasungen":"Nur Verglasungen"],[]);
-  let tR=0,tF=0,tV=0,tM=0,tP=0;
-  (p.rooms||[]).forEach(r=>{tR++;tP+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{tF++;tP+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{tV++;tM+=(v.messungen||[]).length;tP+=(v.photos||[]).length;});});});
-  ov.push(["Statistik"],["Räume",tR],["Fenster",tF],["Verglasungen",tV],["Messungen",tM],["Fotos",tP],[],
+    ["Modus",p.modus==="fenster"?"Fenster+Verglasungen":"Nur Verglasungen"],...(traktList(p).length?[["Gebäudeteile",traktList(p).join(", ")]]:[]),[]);
+  const rooms=sortedRooms(p);
+  let tR=0,tF=0,tV=0,tP=0;const tM={};MS_KEYS.forEach(t=>tM[t]=0);
+  (p.rooms||[]).forEach(r=>{tR++;tP+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{tF++;tP+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{tV++;(v.messungen||[]).forEach(m=>{tM[msTyp(m)]++;});tP+=(v.photos||[]).length;});});});
+  ov.push(["Statistik"],["Räume",tR],["Fenster",tF],["Verglasungen",tV],...MS_KEYS.map(t=>["Messungen "+MS_TYPES[t].label,tM[t]]),["Fotos",tP],[],
     ["Datenquellen"],["M","Messwert"],["H","Herstellerangabe"],["P","Planungsdaten"]);
   // Defaults
   if(p.defaults&&Object.keys(p.defaults).length>0){ov.push([],["Standardwerte"]);Object.entries(p.defaults).forEach(([k,v])=>{if(v&&FIELDS[k])ov.push([FIELDS[k].label,v]);});}
 
-  const mh=["Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Gasfüllgrad [%]","Messung-Nr","Zeitstempel","Datum","Uhrzeit"];
-  vf.forEach(([k,d])=>{mh.push(d.label);if(d.src&&p.showSrc)mh.push(d.label+" [Quelle]");});
-  ff.forEach(([k,d])=>{mh.push(d.label);if(d.src&&p.showSrc)mh.push(d.label+" [Quelle]");});
-  if(p.zustandModus&&p.zustandModus!=="Keine")mh.push("Zustand Rahmen");
-  if(geoOn)mh.push("Geometrie","Zeilen","Felder");
-  if(masseOn)mh.push("Rahmenmaße i/a [mm]");
-  mh.push("Notizen");
-  const mr=[mh];
-  (p.rooms||[]).forEach(room=>{(room.fenster||[]).forEach(fen=>{(fen.verglasungen||[]).forEach(vg=>{
-    const ms=vg.messungen||[];
-    const emit=(m,mi)=>{const z=m?new Date(m.zeit):null;
-      const row=[room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||"",
-        m?m.wert:"",m?mi+1:"",m?m.zeit:"",z?z.toLocaleDateString("de-CH"):"",z?z.toLocaleTimeString("de-CH"):""];
-      vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src&&p.showSrc)row.push(vg.sources?.[k]||"");});
-      ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src&&p.showSrc)row.push(fen.sources?.[k]||"");});
-      if(p.zustandModus&&p.zustandModus!=="Keine")row.push(fen.zustandRahmen||"");
-      if(geoOn){const g=fen.geometrie;row.push(geoSummary(g),g?normalizeGeo(g).rows.length:"",g?geoCellCount(g):"");}
-      if(masseOn)row.push(masseSummary(fen.rahmenmasse));
-      row.push(vg.notizen||"");mr.push(row);};
-    if(ms.length===0)emit(null,0);else ms.forEach((m,mi)=>emit(m,mi));
+  // Gemeinsame Daten-Spalten (Verglasung, Fenster, Zustand, Geometrie, Maße, Notizen)
+  const zOn=p.zustandModus&&p.zustandModus!=="Keine";
+  const fHead=[];
+  vf.forEach(([k,d])=>{fHead.push(d.label);if(d.src&&p.showSrc)fHead.push(d.label+" [Quelle]");});
+  ff.forEach(([k,d])=>{fHead.push(d.label);if(d.src&&p.showSrc)fHead.push(d.label+" [Quelle]");});
+  if(zOn)fHead.push("Zustand Rahmen");
+  if(geoOn)fHead.push("Geometrie","Zeilen","Felder");
+  if(masseOn)fHead.push("Rahmenmaße i/a [mm]");
+  fHead.push("Notizen");
+  const fCells=(fen,vg)=>{const row=[];
+    vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src&&p.showSrc)row.push(vg.sources?.[k]||"");});
+    ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src&&p.showSrc)row.push(fen.sources?.[k]||"");});
+    if(zOn)row.push(fen.zustandRahmen||"");
+    if(geoOn){const g=fen.geometrie;row.push(geoSummary(g),g?normalizeGeo(g).rows.length:"",g?geoCellCount(g):"");}
+    if(masseOn)row.push(masseSummary(fen.rahmenmasse));
+    row.push(vg.notizen||"");return row;};
+  const loc=(room,fen,vg)=>[room.trakt||"",room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||""];
+
+  // Blatt "Verglasungen": eine Zeile je Verglasung, Kennzahlen je Messart
+  const vHead=["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Erfasst"];
+  MS_KEYS.forEach(t=>{const T=MS_TYPES[t];vHead.push(`${T.label} Anzahl`,`${T.label} Ø [${T.unit}]`,`${T.label} min [${T.unit}]`,`${T.label} max [${T.unit}]`);});
+  const vr=[[...vHead,...fHead]];
+  // Blatt "Messungen": eine Zeile je Messwert (Verglasungen ohne Messung: eine Zeile ohne Wert)
+  const mr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Messart","Messwert","Einheit","Messung-Nr","Zeitstempel","Datum","Uhrzeit",...fHead]];
+  rooms.forEach(room=>{(room.fenster||[]).forEach(fen=>{(fen.verglasungen||[]).forEach(vg=>{
+    const L=loc(room,fen,vg),fc=fCells(fen,vg),ms=vg.messungen||[];
+    const vrow=[...L,vgErf(fen,vg)?"ja":"nein"];MS_KEYS.forEach(t=>{const st=msStats(msOf(vg,t));vrow.push(st?st.n:"",st?st.avg:"",st?st.min:"",st?st.max:"");});vr.push([...vrow,...fc]);
+    if(!ms.length){mr.push([...L,"","","","","","","",...fc]);return;}
+    const cnt={};ms.forEach(m=>{const t=msTyp(m),T=MS_TYPES[t];cnt[t]=(cnt[t]||0)+1;const z=new Date(m.zeit),ok=!isNaN(z);
+      mr.push([...L,T.label,m.wert,T.unit,cnt[t],m.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"",...fc]);});
   });});});
 
-  const zh=["Geschoss","Raum-ID","Raumnummer","Fenster","Verglasungen","Messungen","Ø [%]","Min [%]","Max [%]","Median [%]","Vollst. [%]","Fotos"];
-  const zr=[zh];
-  (p.rooms||[]).forEach(room=>{let fc=0,vc=0,mc=0,w=[],pc=(room.photos||[]).length;
-    (room.fenster||[]).forEach(f=>{fc++;pc+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{vc++;pc+=(v.photos||[]).length;(v.messungen||[]).forEach(m=>{mc++;w.push(m.wert);});});});
-    const s=[...w].sort((a,b)=>a-b);const avg=w.length?Math.round(w.reduce((a,b)=>a+b,0)/w.length*10)/10:"";
-    const med=s.length?(s.length%2===0?Math.round((s[s.length/2-1]+s[s.length/2])/2*10)/10:s[Math.floor(s.length/2)]):"";
-    zr.push([room.geschoss||"",room.raumId||"",room.raumnummer||"",fc,vc,mc,avg,s[0]??"",s[s.length-1]??"",med,vc>0?Math.round(Math.min(mc,vc)/vc*100):0,pc]);
+  // Blatt "Zusammenfassung" je Raum
+  const zr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster","Verglasungen","Erfasst [%]","Messwerte","Gasfüllgrad Ø [%]","Gasfüllgrad min [%]","Gasfüllgrad max [%]","Gasfüllgrad Median [%]","Ug gemessen Ø [W/m²K]","Taupunkt Ø [°C]","Taupunkt max [°C]","Fotos"]];
+  rooms.forEach(room=>{let fc=0,vc=0,ec=0,mc=0,pc=(room.photos||[]).length;const all={};MS_KEYS.forEach(t=>all[t]=[]);
+    (room.fenster||[]).forEach(f=>{fc++;pc+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{vc++;if(vgErf(f,v))ec++;pc+=(v.photos||[]).length;(v.messungen||[]).forEach(m=>{mc++;all[msTyp(m)].push(m);});});});
+    const g=msStats(all.gas),u=msStats(all.ug),tp=msStats(all.tp);
+    zr.push([room.trakt||"",room.geschoss||"",room.raumId||"",room.raumnummer||"",fc,vc,vc>0?Math.round(ec/vc*100):0,mc,g?g.avg:"",g?g.min:"",g?g.max:"",g?g.med:"",u?u.avg:"",tp?tp.avg:"",tp?tp.max:"",pc]);
   });
 
-  const fh=["Nr","Ebene","Geschoss","Raumnummer","Fenster","Verglasung","Typ","Zeitstempel","Dateiname"];
-  const fr=[fh];let fn=1;
-  (p.rooms||[]).forEach(room=>{
-    (room.photos||[]).forEach(ph=>{fr.push([fn++,"Raum",room.geschoss,room.raumnummer,"","","Raum",ph.zeit||"",`${room.geschoss}_${room.raumnummer}_Raum_${fn}.jpg`]);});
-    (room.fenster||[]).forEach(fen=>{
-      (fen.photos||[]).forEach(ph=>{fr.push([fn++,"Fenster",room.geschoss,room.raumnummer,fen.nr,"","Fenster",ph.zeit||"",`${room.geschoss}_${room.raumnummer}_${fen.nr}_${fn}.jpg`]);});
-      (fen.verglasungen||[]).forEach(vg=>{(vg.photos||[]).forEach(ph=>{
-        const t=ph.isStempel?"Stempel":"Verglasung";
-        fr.push([fn++,"Verglasung",room.geschoss,room.raumnummer,fen.nr,vg.nr,t,ph.zeit||"",`${room.geschoss}_${room.raumnummer}_${fen.nr}_V${vg.nr}_${t}_${fn}.jpg`]);
-      });});
-    });
-  });
-  return{ov,mr,zr,fr};
+  // Blatt "Fotoverzeichnis" – Dateinamen entsprechen dem ZIP-Export (Ordner "fotos")
+  const fr=[["Nr","Ebene","Gebäudeteil","Geschoss","Raumnummer","Fenster","Verglasung","Typ","Zeitstempel","Datei im ZIP"]];
+  photoEntries(p).forEach(e=>fr.push([e.n,e.ebene,e.room.trakt||"",e.room.geschoss||"",e.room.raumnummer||"",e.fen?e.fen.nr:"",e.vg?e.vg.nr:"",e.typ,e.ph.zeit||"","fotos/"+e.name]));
+  return{ov,mr,vr,zr,fr};
 }
 
 function doExcelExport(p){const d=buildExport(p);const wb=XLSX.utils.book_new();
   const w1=XLSX.utils.aoa_to_sheet(d.ov);w1["!cols"]=[{wch:28},{wch:50}];XLSX.utils.book_append_sheet(wb,w1,"Übersicht");
+  const wv=XLSX.utils.aoa_to_sheet(d.vr);wv["!cols"]=d.vr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,22))}));wv["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:d.vr[0].length-1}})};XLSX.utils.book_append_sheet(wb,wv,"Verglasungen");
   const w2=XLSX.utils.aoa_to_sheet(d.mr);w2["!cols"]=d.mr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,22))}));w2["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:d.mr[0].length-1}})};XLSX.utils.book_append_sheet(wb,w2,"Messungen");
   const w3=XLSX.utils.aoa_to_sheet(d.zr);w3["!cols"]=d.zr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,20))}));w3["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:d.zr[0].length-1}})};XLSX.utils.book_append_sheet(wb,w3,"Zusammenfassung");
   if(d.fr.length>1){const w4=XLSX.utils.aoa_to_sheet(d.fr);XLSX.utils.book_append_sheet(wb,w4,"Fotoverzeichnis");}
-  XLSX.writeFile(wb,`FensterCheck_${p.name||"Export"}_${new Date().toISOString().slice(0,10)}.xlsx`);}
-function doCSVExport(p){const d=buildExport(p);const csv=d.mr.map(r=>r.map(c=>{const s=String(c??"");return s.includes(";")||s.includes('"')?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\n");const b=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`FensterCheck_${p.name||"Export"}_${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(u);}
-function stripPhotos(p){const c=JSON.parse(JSON.stringify(p));(c.rooms||[]).forEach(r=>{r.photos=[];(r.fenster||[]).forEach(f=>{f.photos=[];(f.verglasungen||[]).forEach(v=>{v.photos=[];});});});return c;}
-function doJSONExport(p,withoutPhotos){const data=withoutPhotos?stripPhotos(p):p;const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`FensterCheck_${p.name||"Backup"}${withoutPhotos?"_Daten":""}_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(u);}
-async function doPhotoExport(p){let n=0;const dl=async(data,name)=>{const a=document.createElement("a");a.href=data;a.download=name;a.click();n++;await new Promise(r=>setTimeout(r,250));};
-  for(const rm of(p.rooms||[])){for(const ph of(rm.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_Raum_${ph.id.slice(-4)}.jpg`);
-    for(const f of(rm.fenster||[])){for(const ph of(f.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_${f.nr}_${ph.id.slice(-4)}.jpg`);
-      for(const v of(f.verglasungen||[]))for(const ph of(v.photos||[]))await dl(ph.data,`${rm.geschoss}_${rm.raumnummer}_${f.nr}_V${v.nr}_${ph.isStempel?"St":"Vgl"}_${ph.id.slice(-4)}.jpg`);}}return n;}
+  XLSX.writeFile(wb,expName(p,"xlsx"));}
+const expName=(p,ext)=>`FensterCheck_${fnSafe(p.name)||"Projekt"}_${new Date().toISOString().slice(0,10)}.${ext}`;
+function doCSVExport(p){const d=buildExport(p);const csv=d.mr.map(r=>r.map(c=>{const s=String(c??"");return s.includes(";")||s.includes('"')||s.includes("\n")?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\n");download(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"}),expName(p,"csv"));}
+function stripPhotos(p){const c=JSON.parse(JSON.stringify(p));photoLists(c).forEach(o=>{o.photos=[];});return c;}
+// Nur Daten (ohne Fotos) \u2013 klein, z.B. zum Zusammenf\u00FChren zwischen Ger\u00E4ten
+function doJSONExport(p){download(new Blob([JSON.stringify(stripPhotos(p),null,1)],{type:"application/json"}),expName(p,"json").replace(/\.json$/,"_Daten.json"));}
+// ZIP mit Projektdaten (fenstercheck.json) + allen Fotos als lesbar benannte Dateien \u2013 wieder importierbar
+async function doZipExport(p,onStep){const ents=photoEntries(p);const fileOf={};ents.forEach(e=>{fileOf[e.ph.id]="fotos/"+e.name;});
+  const data=JSON.parse(JSON.stringify(p));photoLists(data).forEach(o=>o.photos.forEach(ph=>{if(fileOf[ph.id])ph.file=fileOf[ph.id];delete ph.data;}));data._format="fenstercheck-zip-1";
+  const entries=[{name:"fenstercheck.json",data:JSON.stringify(data,null,1)}];let miss=0;
+  for(const e of ents){const b=await photoBlob(e.ph);if(b)entries.push({name:"fotos/"+e.name,data:b});else miss++;}
+  download(await makeZip(entries,onStep),expName(p,"zip"));return {n:ents.length-miss,miss};}
 
 // Theme
 const C={bg:"#0b0f14",sf:"#141b24",sf2:"#1c2636",bd:"#2a3648",ac:"#4da3ff",acBg:"rgba(77,163,255,0.12)",
@@ -322,14 +429,79 @@ function ZustInp({modus:m,value:v,onChange:ch}){
   if(m==="Detailliert"){const sel=(v||"").split(";;").filter(Boolean);return <div style={{marginBottom:8}}><label style={$.lbl}>Zustand</label><div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{ZU_DET.map(z=>{const a=sel.includes(z);return <button key={z} style={{...$.btn,...$.bS,padding:"3px 7px",fontSize:11,...(a?$.bP:$.bO)}} onClick={()=>ch(a?sel.filter(x=>x!==z).join(";;"):[...sel,z].join(";;"))}>{z}</button>;})}</div></div>;}
   return null;
 }
-function Photos({photos:ps,onAdd,onDel,label:l}){
-  const camRef=useRef(),galRef=useRef();
-  const h=e=>{[...e.target.files].forEach(f=>{if(!f)return;const r=new FileReader();r.onload=ev=>{const img=new Image();img.onload=()=>{const c=document.createElement("canvas");const mx=1200;let w=img.width,hh=img.height;if(w>mx||hh>mx){if(w>hh){hh=(hh/w)*mx;w=mx;}else{w=(w/hh)*mx;hh=mx;}}c.width=w;c.height=hh;c.getContext("2d").drawImage(img,0,0,w,hh);onAdd({id:uid(),data:c.toDataURL("image/jpeg",0.7),zeit:new Date().toISOString()});};img.src=ev.target.result;};r.readAsDataURL(f);});e.target.value="";};
-  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length})</span><div style={{display:"flex",gap:5}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>camRef.current?.click()}>📷</button><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>galRef.current?.click()}>🖼️</button></div><input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/><input ref={galRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={h}/></div>{ps.length>0&&<div style={$.phG}>{ps.map(p=><div key={p.id} style={{position:"relative"}}><img src={p.data} style={$.phT} alt=""/><div onClick={()=>onDel(p.id)} style={{position:"absolute",top:2,right:2,width:18,height:18,borderRadius:9,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,cursor:"pointer"}}>×</div></div>)}</div>}</div>;
+// Vorschaubild aus dem Foto-Store (Objekt-URLs werden für die Sitzung zwischengespeichert)
+const thumbCache=new Map();
+function Thumb({ph,onClick}){
+  const[u,setU]=useState(ph.data||thumbCache.get(ph.id)||null);
+  useEffect(()=>{if(ph.data){setU(ph.data);return;}const c=thumbCache.get(ph.id);if(c){setU(c);return;}let alive=true;
+    phGet(ph.id).then(r=>{const b=r&&(r.tblob||r.blob);if(!b)return;const url=URL.createObjectURL(b);thumbCache.set(ph.id,url);if(alive)setU(url);}).catch(()=>{});
+    return()=>{alive=false;};},[ph.id,ph.data]);
+  return <div onClick={onClick} style={{...$.phT,cursor:"pointer",background:C.sf2,overflow:"hidden"}}>{u&&<img src={u} alt="" style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>}</div>;
 }
-function NumPad({value:v,onChange:ch,onSubmit:sub}){
-  const pr=k=>{if(k==="DEL")ch(v.slice(0,-1));else if(k==="."){if(!v.includes("."))ch(v+".");}else ch(v+k);};
-  return <div><div style={$.numD}>{v||"—"}{v?" %":""}</div><div style={$.numG}>{["7","8","9","4","5","6","1","2","3"].map(k=><div key={k} style={$.numK} onClick={()=>pr(k)}>{k}</div>)}<div style={$.numK} onClick={()=>pr(".")}>.</div><div style={$.numK} onClick={()=>pr("0")}>0</div><div style={$.numK} onClick={()=>pr("DEL")}>⌫</div></div><div style={{display:"flex",gap:6,marginTop:8}}><button style={{...$.btn,...$.bO,flex:1}} onClick={()=>ch("")}>Löschen</button><button style={{...$.btn,...$.bP,flex:2}} onClick={()=>{if(v){sub(v);ch("");}}}>✓ Speichern</button></div></div>;
+// Vollbild-Betrachter: Tippen = Originalgröße (verschiebbar), Wischen/Pfeile = blättern
+function PhotoViewer({photos,start,title,onClose,onDel}){
+  const[i,setI]=useState(start||0);const[zoom,setZoom]=useState(false);
+  const[url,setUrl]=useState(()=>{const q=photos[start||0];return q?(q.data||thumbCache.get(q.id)||null):null;});
+  const box=useRef(null),tx=useRef(null),zp=useRef(null);
+  const n=photos.length,idx=Math.min(i,Math.max(0,n-1)),ph=photos[idx];
+  const go=d=>{if(n>1)setI((idx+d+n)%n);};
+  useEffect(()=>{if(!n)onClose();},[n]);
+  useEffect(()=>{const o=document.body.style.overflow;document.body.style.overflow="hidden";return()=>{document.body.style.overflow=o;};},[]);
+  useEffect(()=>{if(!ph)return;let alive=true,u=null;setZoom(false);setUrl(ph.data||thumbCache.get(ph.id)||null);
+    if(!ph.data)phGet(ph.id).then(r=>{if(alive&&r&&r.blob){u=URL.createObjectURL(r.blob);setUrl(u);}}).catch(()=>{});
+    return()=>{alive=false;if(u)URL.revokeObjectURL(u);};},[ph&&ph.id]);
+  useEffect(()=>{const k=e=>{if(e.key==="Escape")onClose();else if(e.key==="ArrowRight")go(1);else if(e.key==="ArrowLeft")go(-1);};window.addEventListener("keydown",k);return()=>window.removeEventListener("keydown",k);});
+  useEffect(()=>{const b=box.current,img=b&&b.querySelector("img");if(zoom&&img&&zp.current){b.scrollLeft=zp.current.fx*img.offsetWidth-b.clientWidth/2;b.scrollTop=zp.current.fy*img.offsetHeight-b.clientHeight/2;}},[zoom]);
+  if(!ph)return null;
+  const tap=e=>{if(zoom){setZoom(false);return;}const r=e.currentTarget.getBoundingClientRect();zp.current={fx:(e.clientX-r.left)/r.width,fy:(e.clientY-r.top)/r.height};setZoom(true);};
+  const z=new Date(ph.zeit);
+  const vb={background:"rgba(20,27,36,0.85)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:8,padding:"8px 12px",fontSize:15,fontWeight:600,cursor:"pointer",textDecoration:"none",lineHeight:1};
+  return ReactDOM.createPortal(<div style={{position:"fixed",inset:0,background:"#000",zIndex:500,display:"flex",flexDirection:"column",color:"#fff"}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",paddingTop:"max(10px, env(safe-area-inset-top))"}}>
+      <div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{title||"Foto"} · {idx+1}/{n}</div><div style={{fontSize:11,opacity:0.65}}>{isNaN(z)?"":z.toLocaleString("de-CH")}{ph.w?` · ${ph.w}×${ph.h} px`:""}</div></div>
+      {url&&<a href={url} download={`Foto_${idx+1}.jpg`} style={vb}>⬇</a>}
+      {onDel&&<button style={vb} onClick={()=>{if(confirm("Foto löschen?"))onDel(ph.id);}}>🗑</button>}
+      <button style={vb} onClick={onClose}>✕</button>
+    </div>
+    <div ref={box} onTouchStart={e=>{if(!zoom)tx.current=e.touches[0].clientX;}} onTouchEnd={e=>{if(zoom||tx.current==null)return;const dx=e.changedTouches[0].clientX-tx.current;tx.current=null;if(Math.abs(dx)>50)go(dx<0?1:-1);}}
+      style={{flex:1,minHeight:0,overflow:zoom?"auto":"hidden",display:zoom?"block":"flex",alignItems:"center",justifyContent:"center",position:"relative"}}>
+      {url?<img src={url} alt="" onClick={tap} style={zoom?{display:"block",width:ph.w||"auto",maxWidth:"none",cursor:"zoom-out"}:{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",cursor:"zoom-in"}}/>:<div style={{opacity:0.6}}>Lädt…</div>}
+      {!zoom&&n>1&&<button style={{...vb,position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",fontSize:22,padding:"10px 14px"}} onClick={()=>go(-1)}>‹</button>}
+      {!zoom&&n>1&&<button style={{...vb,position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",fontSize:22,padding:"10px 14px"}} onClick={()=>go(1)}>›</button>}
+    </div>
+    <div style={{textAlign:"center",fontSize:11,opacity:0.6,padding:"8px 0",paddingBottom:"max(8px, env(safe-area-inset-bottom))"}}>{zoom?"Ziehen zum Verschieben · Tippen zum Verkleinern":"Tippen = Originalgröße"+(n>1?" · Wischen zum Blättern":"")}</div>
+  </div>,document.body);
+}
+function Photos({photos:ps,onAdd,onDel,label:l}){
+  const camRef=useRef(),galRef=useRef();const[vi,setVi]=useState(null);const[busy,setBusy]=useState(0);
+  // Nacheinander verarbeiten: Kamerafotos sind im Speicher groß (12 MP ≈ 48 MB entpackt)
+  const h=async e=>{const files=[...(e.target.files||[])];e.target.value="";if(!files.length)return;setBusy(files.length);let fail=0;
+    for(const f of files){try{onAdd(await storeNewPhoto(f));}catch(err){console.error(err);fail++;}setBusy(b=>Math.max(0,b-1));}
+    if(fail)alert(`${fail} Foto(s) konnten nicht gespeichert werden (Speicher voll oder Bildformat nicht lesbar).`);};
+  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length}){busy>0&&<span style={{color:C.warn,fontWeight:400}}> · ⏳ {busy} wird gespeichert…</span>}</span><div style={{display:"flex",gap:5}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>camRef.current?.click()}>📷</button><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 10px"}} onClick={()=>galRef.current?.click()}>🖼️</button></div><input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/><input ref={galRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={h}/></div>
+    {ps.length>0&&<div style={$.phG}>{ps.map((p,i)=><div key={p.id} style={{position:"relative"}}><Thumb ph={p} onClick={()=>setVi(i)}/><div onClick={()=>{if(confirm("Foto löschen?"))onDel(p.id);}} style={{position:"absolute",top:2,right:2,width:20,height:20,borderRadius:10,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,cursor:"pointer"}}>×</div></div>)}</div>}
+    {vi!=null&&ps.length>0&&<PhotoViewer photos={ps} start={vi} title={l||"Fotos"} onClose={()=>setVi(null)} onDel={onDel}/>}
+  </div>;
+}
+// Ziffernblock für Messwerte; "±" für Messarten mit negativen Werten (Taupunkt). onSubmit → false = nicht gespeichert
+function NumPad({value:v,onChange:ch,onSubmit:sub,unit,neg}){
+  const pr=k=>{if(k==="DEL")ch(v.slice(0,-1));else if(k==="."){if(!v.includes("."))ch((v===""||v==="-"?v+"0":v)+".");}else if(k==="±")ch(v.startsWith("-")?v.slice(1):"-"+v);else ch(v+k);};
+  const ok=v!==""&&!isNaN(parseFloat(v));
+  return <div><div style={$.numD}>{v||"—"}{v&&unit?<span style={{fontSize:20,letterSpacing:0,marginLeft:6}}>{unit}</span>:null}</div><div style={$.numG}>{["7","8","9","4","5","6","1","2","3"].map(k=><div key={k} style={$.numK} onClick={()=>pr(k)}>{k}</div>)}<div style={$.numK} onClick={()=>pr(".")}>.</div><div style={$.numK} onClick={()=>pr("0")}>0</div><div style={$.numK} onClick={()=>pr("DEL")}>⌫</div></div>
+    <div style={{display:"flex",gap:6,marginTop:8}}>{neg&&<button style={{...$.btn,...$.bO,flex:1,fontSize:18}} onClick={()=>pr("±")}>±</button>}<button style={{...$.btn,...$.bO,flex:1}} onClick={()=>ch("")}>Leeren</button><button style={{...$.btn,...$.bP,flex:2,opacity:ok?1:0.5}} onClick={()=>{if(ok&&sub(v)!==false)ch("");}}>✓ Speichern</button></div></div>;
+}
+// Auswahl Gebäudeteil/Trakt: vorhandene Einträge oder neuen Namen eingeben
+function TraktPick({value,onChange,list}){const[neu,setNeu]=useState(!!value&&!list.includes(value));
+  return <div style={{marginBottom:8}}><label style={$.lbl}>Gebäudeteil / Trakt (optional)</label>
+    {!neu?<select style={$.sel} value={list.includes(value)?value:""} onChange={e=>{if(e.target.value==="__new"){setNeu(true);onChange("");}else onChange(e.target.value);}}><option value="">— ohne —</option>{list.map(t=><option key={t} value={t}>{t}</option>)}<option value="__new">+ Neuer Gebäudeteil…</option></select>
+    :<div style={{display:"flex",gap:6}}><input style={$.inp} autoFocus value={value||""} onChange={e=>onChange(e.target.value)} placeholder="z.B. Schulhaus, Turnhalle, Trakt A"/><button style={{...$.btn,...$.bO,...$.bS}} onClick={()=>{setNeu(false);onChange("");}}>✕</button></div>}</div>;}
+// Fängt Darstellungsfehler ab (statt leerer Seite) – die Daten liegen bereits in IndexedDB
+class ErrorBoundary extends React.Component{
+  constructor(p){super(p);this.state={err:null};}
+  static getDerivedStateFromError(err){return{err};}
+  componentDidCatch(err,info){console.error(err,info);}
+  render(){if(!this.state.err)return this.props.children;
+    return <div style={{...$.app,padding:16}}><div style={{...$.card,borderColor:C.err,marginTop:40}}><div style={{fontWeight:800,fontSize:16,marginBottom:8}}>⚠ Unerwarteter Fehler</div><div style={{fontSize:13,color:C.tx2,marginBottom:10,lineHeight:1.5}}>Die bisher erfassten Daten sind gespeichert. Bitte die App neu laden.</div><pre style={{fontSize:11,whiteSpace:"pre-wrap",color:C.err,marginBottom:12}}>{String((this.state.err&&this.state.err.message)||this.state.err)}</pre><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>location.reload()}>Neu laden</button></div></div>;}
 }
 function Tog({value:v,onChange:ch,label:l}){return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 0"}}><span style={{fontSize:13}}>{l}</span><div style={$.tog(v)} onClick={()=>ch(!v)}><div style={$.togD(v)}/></div></div>;}
 
@@ -478,9 +650,25 @@ function App(){
   const[globalTD,setGlobalTD]=useState(loadGlobalTD()); // globale thermische Standardwerte
   const[dupQty,setDupQty]=useState(1); // Anzahl Kopien beim Raum-/Fenster-Duplizieren
   const[dupFenId,setDupFenId]=useState(null); // Ziel-Fenster beim Duplizieren
+  const[msT,setMsT]=useState("gas"); // aktive Messart im Ziffernblock (bleibt beim Blättern erhalten)
+  const[bootMsg,setBootMsg]=useState(""); // Fortschritt beim Start (Foto-Migration)
+  const[bootErr,setBootErr]=useState(null);
+  const[busyMsg,setBusyMsg]=useState(""); // länger laufende Aktionen (ZIP, Import)
+  const[storInfo,setStorInfo]=useState(null);
+  const[edR,setEdR]=useState(null); // Raum bearbeiten {geschoss,raumnummer,raumId,trakt}
+  const[newTrakt,setNewTrakt]=useState("");
 
-  useEffect(()=>{dbAll().then(d=>{setProjects(d||[]);setLoading(false);}).catch(()=>setLoading(false));},[]);
-  const flash=m=>{setToast(m);setTimeout(()=>setToast(null),2500);};
+  // Start: Projekte laden, alte eingebettete Fotos in den Foto-Store verschieben, verwaiste Bilder entfernen.
+  // Die Oberfläche bleibt bis dahin gesperrt, damit keine Bearbeitung mit der Migration kollidiert.
+  useEffect(()=>{(async()=>{try{
+    const d=(await dbAll())||[];const todo=d.filter(p=>legacyCount(p)>0);const total=todo.reduce((s,p)=>s+legacyCount(p),0);let done=0;
+    for(const p of todo){await migratePhotos(p,()=>{done++;setBootMsg(`Fotos werden umgestellt… ${done}/${total}`);});await dbPut(p);}
+    await gcPhotos(d);setProjects(d);setLoading(false);
+  }catch(e){console.error(e);setBootErr(e&&e.message||String(e));}
+    try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist();}catch(e){}})();},[]);
+  useEffect(()=>{if(view!=="settings"||!navigator.storage||!navigator.storage.estimate)return;
+    Promise.all([navigator.storage.estimate(),navigator.storage.persisted?navigator.storage.persisted():Promise.resolve(null)]).then(([e,per])=>setStorInfo({used:e.usage||0,quota:e.quota||0,per})).catch(()=>{});},[view]);
+  const flash=m=>{setToast(m);setTimeout(()=>setToast(t=>t===m?null:t),2500);};
 
   // Track unsaved state
   useEffect(()=>{setHasUnsaved(numVal.length>0);},[numVal]);
@@ -490,18 +678,42 @@ function App(){
     else action();
   };
 
-  const save=async p=>{p.geaendert=new Date().toISOString();await dbPut(p);setProjects(pv=>{const i=pv.findIndex(x=>x.id===p.id);if(i>=0){const n=[...pv];n[i]=p;return n;}return[...pv,p];});setProj({...p});};
+  // projRef = aktuellster Projektstand. Wird in save() sofort gesetzt, damit mehrere Änderungen
+  // hintereinander (z.B. mehrere Fotos, Eingabe beim Verlassen einer Ansicht) nicht auf einem alten Stand aufbauen.
+  const projRef=useRef(null);projRef.current=proj;
+  const save=p=>{const np={...p,geaendert:new Date().toISOString()};projRef.current=np;setProj(np);
+    setProjects(pv=>{const i=pv.findIndex(x=>x.id===np.id);if(i>=0){const n=[...pv];n[i]=np;return n;}return[...pv,np];});
+    return dbPut(np).catch(e=>{console.error(e);flash("⚠ Speichern fehlgeschlagen: "+(e&&e.message||e));});};
   const gR=(p,id)=>p.rooms.find(r=>r.id===id);
   const gF=(r,id)=>r?.fenster?.find(f=>f.id===id);
   const gV=(f,id)=>f?.verglasungen?.find(v=>v.id===id);
   // Nächste freie Nummer mit Präfix (z.B. "V" oder "F") – Array-Länge kollidiert nach Löschungen
   const nextNr=(r,pre)=>{let mx=0;(r.fenster||[]).forEach(f=>{const m=String(f.nr||"").match(new RegExp("^"+pre+"(\\d+)$"));if(m)mx=Math.max(mx,+m[1]);});return mx+1;};
-  const mut=fn=>{const p=typeof structuredClone==="function"?structuredClone(proj):JSON.parse(JSON.stringify(proj));fn(p);save(p);};
+  const mut=fn=>{const base=projRef.current;if(!base)return;const p=typeof structuredClone==="function"?structuredClone(base):JSON.parse(JSON.stringify(base));fn(p);return save(p);};
 
   const hasData=p=>{let n=0;(p?.rooms||[]).forEach(r=>(r.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{n+=(v.messungen||[]).length;})));return n>0;};
 
-  const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"fenster",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],defaults:{},rooms:[]};setProj(p);setView("setup");};
-  const delProj=async id=>{await dbDel(id);setProjects(p=>p.filter(x=>x.id!==id));if(proj?.id===id){setProj(null);setView("home");}};
+  const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"fenster",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],defaults:{},trakte:[],rooms:[]};setProj(p);setView("setup");};
+  const delProj=async id=>{const old=projects.find(x=>x.id===id);await dbDel(id);if(old)phDel(photoIdsIn(old));setProjects(p=>p.filter(x=>x.id!==id));if(proj?.id===id){setProj(null);setView("home");}};
+
+  // Gebäudeteile (Trakte): Ebene über Geschoss/Raum. Räume tragen den Namen in room.trakt, die Reihenfolge steht in p.trakte.
+  // Verwaltung in der Einrichtung: wie die übrigen Einrichtungsfelder lokal, gespeichert mit "Fertig" (bzw. der nächsten Änderung)
+  const trUpd=fn=>{const np=JSON.parse(JSON.stringify(projRef.current));fn(np);projRef.current=np;setProj(np);};
+  const addTrakt=name=>{const n=(name||"").trim();if(!n)return;if(traktList(projRef.current).includes(n)){flash("Gebäudeteil existiert bereits");return;}trUpd(p=>{p.trakte=[...traktList(p),n];});};
+  const renTrakt=(old,name)=>{const n=(name||"").trim();if(!n||n===old)return;if(traktList(projRef.current).includes(n)){flash("Name bereits vergeben");return;}trUpd(p=>{p.trakte=traktList(p).map(t=>t===old?n:t);(p.rooms||[]).forEach(r=>{if(r.trakt===old)r.trakt=n;});});};
+  const delTrakt=t=>{const cnt=(projRef.current.rooms||[]).filter(r=>r.trakt===t).length;if(!confirm(cnt?`Gebäudeteil «${t}» entfernen? ${cnt} Raum/Räume werden «ohne Gebäudeteil» geführt (nicht gelöscht).`:`Gebäudeteil «${t}» entfernen?`))return;trUpd(p=>{(p.rooms||[]).forEach(r=>{if(r.trakt===t)r.trakt="";});p.trakte=traktList(p).filter(x=>x!==t);});};
+  const moveTrakt=(t,d)=>trUpd(p=>{const l=traktList(p);const i=l.indexOf(t),j=i+d;if(i<0||j<0||j>=l.length)return;[l[i],l[j]]=[l[j],l[i]];p.trakte=l;});
+  const setRoomProps=(rId,vals)=>mut(p=>{const r=gR(p,rId);if(!r)return;Object.assign(r,vals);p.trakte=traktList(p);});
+  const renFen=(rId,fId,nr)=>{const n=(nr||"").trim();if(!n)return;mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.nr=n;});};
+
+  // Import von ZIP (Daten + Fotos) oder JSON (auch alte Backups mit eingebetteten Fotos)
+  const impFile=async(file,merge)=>{if(!file)return;setBusyMsg("Import läuft…");try{const d=await readProjectFile(file);
+      if(merge&&projRef.current){const cur=projRef.current;const ids=new Set(cur.rooms.map(r=>r.id));const added=d.rooms.filter(r=>!ids.has(r.id)),skipped=d.rooms.filter(r=>ids.has(r.id));
+        phDel(skipped.flatMap(r=>photoIdsIn(r)));mut(p=>{p.rooms=[...p.rooms,...added];p.trakte=traktList(p);});
+        flash(`Zusammengeführt: ${added.length} Räume neu`+(skipped.length?`, ${skipped.length} bereits vorhanden`:""));}
+      else{d.id=uid();save(d);setView("survey");flash(`Projekt «${d.name||"Import"}» importiert`);}
+    }catch(e){console.error(e);flash("Import fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");};
+  const csvTrakt=r=>r.trakt||r.gebaeudeteil||r["gebäudeteil"]||r.bauteil||r.gebaeude||r["gebäude"]||"";
   const impRooms=()=>{if(!impTxt.trim())return;const d=parseCSV(impTxt);if(!d.length){flash("Keine Daten");return;}
     const hasPerWindow=d.some(r=>r.fenster_nr||r.fensternr||r.window_nr);
     mut(p=>{
@@ -511,15 +723,16 @@ function App(){
           const geschoss=r.geschoss||r.floor||"";
           const raumnummer=r.raumnummer||r.room||"";
           const raumId=r.raumid||r.raum_id||r.id||"";
+          const trakt=csvTrakt(r);
           if(!raumnummer&&!raumId)return;
-          const key=`${geschoss}||${raumnummer}||${raumId}`;
-          if(!groups.has(key))groups.set(key,{geschoss,raumnummer,raumId,windows:[]});
+          const key=`${trakt}||${geschoss}||${raumnummer}||${raumId}`;
+          if(!groups.has(key))groups.set(key,{trakt,geschoss,raumnummer,raumId,windows:[]});
           const fnr=r.fenster_nr||r.fensternr||r.window_nr||"";
           const nVg=parseInt(r.verglasungen||r.anzahl_verglasungen||r.glazings||"1")||1;
           groups.get(key).windows.push({nr:fnr,nVg});
         });
         groups.forEach(g=>{
-          const rm={id:uid(),geschoss:g.geschoss,raumnummer:g.raumnummer,raumId:g.raumId,fenster:[],photos:[]};
+          const rm={id:uid(),trakt:g.trakt,geschoss:g.geschoss,raumnummer:g.raumnummer,raumId:g.raumId,fenster:[],photos:[]};
           g.windows.forEach((w,wi)=>{
             const nr=w.nr||`F${wi+1}`;
             if(p.modus==="fenster"){
@@ -542,7 +755,7 @@ function App(){
           const raumnummer=r.raumnummer||r.room||"";
           const raumId=r.raumid||r.raum_id||r.id||"";
           if(!raumnummer&&!raumId)return null;
-          const rm={id:uid(),geschoss,raumnummer,raumId,fenster:[],photos:[]};
+          const rm={id:uid(),trakt:csvTrakt(r),geschoss,raumnummer,raumId,fenster:[],photos:[]};
           const nFen=parseInt(r.fenster||r.anzahl_fenster||r.windows||"0")||0;
           const nVgJeFen=parseInt(r.verglasungen_je_fenster||r.vg_je_fenster||r.glazings_per_window||"0")||0;
           const nVgTotal=parseInt(r.verglasungen||r.anzahl_verglasungen||r.glazings||"0")||0;
@@ -571,15 +784,15 @@ function App(){
         }).filter(Boolean);
         p.rooms=[...p.rooms,...newRooms];
       }
+      p.trakte=traktList(p);
     });
     const parsed=parseCSV(impTxt);
     const hasWin=parsed.some(r=>r.fenster_nr||r.fensternr||r.window_nr);
     const nR=hasWin?new Set(parsed.map(r=>`${r.geschoss||""}|${r.raumnummer||r.room||""}`)).size:parsed.filter(r=>r.raumnummer||r.raumid||r.raum_id||r.id||r.room).length;
     setImpTxt("");flash(`${nR} Räume importiert`);};
-  const impJSON=(t,merge)=>{try{const d=JSON.parse(t);if(!d.id||!d.rooms){flash("Ungültig");return;}if(merge&&proj){mut(p=>{const ids=new Set(p.rooms.map(r=>r.id));const added=d.rooms.filter(r=>!ids.has(r.id));p.rooms=[...p.rooms,...added];});flash("Zusammengeführt");}else{d.id=uid();d.geaendert=new Date().toISOString();save(d);setProjects(pv=>[...pv,d]);setProj(d);setView("survey");flash(`Projekt «${d.name||"Import"}» importiert`);}}catch{flash("Fehler: ungültige JSON-Datei");}};
 
-  const addRoom=()=>{if(!fmR.raumnummer&&!fmR.raumId)return;mut(p=>{p.rooms.push({id:uid(),...fmR,fenster:[],photos:[]});});setFmR({geschoss:fmR.geschoss,raumnummer:"",raumId:""});setModal(null);flash("Raum +");};
-  const delRoom=rId=>{mut(p=>{p.rooms=p.rooms.filter(r=>r.id!==rId);});if(room?.id===rId){setRoom(null);setView("survey");}};
+  const addRoom=()=>{if(!fmR.raumnummer&&!fmR.raumId)return;const t=(fmR.trakt||"").trim();mut(p=>{p.rooms.push({id:uid(),trakt:t,geschoss:fmR.geschoss,raumnummer:fmR.raumnummer,raumId:fmR.raumId,fenster:[],photos:[]});p.trakte=traktList(p);});setFmR({...fmR,raumnummer:"",raumId:""});setModal(null);flash("Raum +");};
+  const delRoom=rId=>{phDel(photoIdsIn(gR(projRef.current,rId)));mut(p=>{p.rooms=p.rooms.filter(r=>r.id!==rId);});if(room?.id===rId){setRoom(null);setView("survey");}};
 
   const addFen=(rId,nr,va)=>{mut(p=>{const r=gR(p,rId);if(!r)return;if(p.modus==="fenster"){r.fenster.push({id:uid(),nr:nr||`F${nextNr(r,"F")}`,verglasungen:Array.from({length:va||1},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),data:{},sources:{},photos:[],notizen:""});}else{r.fenster.push({id:uid(),nr:`V${nextNr(r,"V")}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});}});};
   const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({id:uid(),nr:(f.verglasungen.length||0)+1,messungen:[],data:{},sources:{},photos:[],notizen:""});}});
@@ -591,7 +804,7 @@ function App(){
   const quickAdd=(rId,n)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const s=nextNr(r,"V");for(let i=0;i<n;i++)r.fenster.push({id:uid(),nr:`V${s+i}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});});flash(`+${n}`);};
 
   // Delete Verglasung (in Vg mode = delete fenster entry, in Fen mode = remove from verglasungen array)
-  const delVg=(rId,fId,vId)=>{mut(p=>{const r=gR(p,rId);if(!r)return;
+  const delVg=(rId,fId,vId)=>{const cf=gF(gR(projRef.current,rId),fId);if(cf)phDel(cf.isVg||cf.verglasungen.length<=1?photoIdsIn(cf):photoIdsIn(gV(cf,vId)));mut(p=>{const r=gR(p,rId);if(!r)return;
     const f=gF(r,fId);if(!f)return;
     if(f.isVg||f.verglasungen.length<=1){r.fenster=r.fenster.filter(x=>x.id!==fId);} // remove whole pseudo-fenster or last vg
     else{f.verglasungen=f.verglasungen.filter(v=>v.id!==vId);f.verglasungen.forEach((v,i)=>{v.nr=i+1;});
@@ -603,7 +816,9 @@ function App(){
     if(p.modus==="verglasung"){nf={id:uid(),nr:`V${nextNr(r,"V")}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""};r.fenster.push(nf);}
   });return nf;};
 
-  const addMs=(rId,fId,vId,val)=>{mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v)v.messungen.push({wert:parseFloat(val),zeit:new Date().toISOString()});});flash(`${val}%`);};
+  const addMs=(rId,fId,vId,typ,val)=>{const T=MS_TYPES[typ]||MS_TYPES.gas;const w=parseFloat(String(val).replace(",","."));if(isNaN(w)){flash("Ungültiger Wert");return false;}
+    if(w<T.min||w>T.max){if(!confirm(`${w} ${T.unit} liegt außerhalb des üblichen Bereichs für ${T.label} (${T.min} bis ${T.max} ${T.unit}). Trotzdem speichern?`))return false;}
+    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v){if(!v.messungen)v.messungen=[];v.messungen.push({typ,wert:w,zeit:new Date().toISOString()});}});flash(`${T.label} ${w} ${T.unit} ✓`);return true;};
   const delMs=(rId,fId,vId,mi)=>{mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v)v.messungen.splice(mi,1);});};
   const setFV=(rId,fId,vId,k,val)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.data)t.data={};t.data[k]=val;}});};
   const setFS=(rId,fId,vId,k,s)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.sources)t.sources={};t.sources[k]=s;}});};
@@ -611,11 +826,9 @@ function App(){
   const setGeo=(rId,fId,g)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.geometrie=g;});};
   const setMasse=(rId,fId,m)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.rahmenmasse=m;});};
   const addPh=(rId,fId,vId,ph)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t){if(!t.photos)t.photos=[];t.photos.push(ph);}});};
-  const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});};
+  const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});phDel([pId]);};
 
-  const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=(x.data||"").length;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});return{rooms:(p?.rooms||[]).length,g,m,ph,mb:pb/1048576};};
-  // Eine Verglasung gilt als "erfasst", wenn sie (oder ihr Fenster) dokumentiert ist – Messung, Foto, Daten oder Zustand. Nicht mehr nur an der Gasfüllgrad-Messung festgemacht.
-  const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||Object.values(f?.data||{}).some(x=>x&&(""+x).trim())||!!f?.zustandRahmen;
+  const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=x.kb?x.kb*1024:(x.data||"").length*0.75;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});return{rooms:(p?.rooms||[]).length,g,m,ph,mb:pb/1048576};};
   const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgErf(f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
   const isA=k=>(proj?.activeFields||[]).includes(k);
   const fFs=()=>Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&d.t!=="geo"&&d.t!=="masse"&&isA(k));
@@ -623,21 +836,27 @@ function App(){
   const hasZ=()=>proj?.zustandModus&&proj.zustandModus!=="Keine"&&isA("zustandRahmen");
   const getDef=(k,fenRec,vgRec)=>resolveDef(k,fenRec,vgRec,proj);
 
-  if(loading)return <div style={{...$.app,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><span style={{color:C.tx2}}>Laden...</span></div>;
-  const Toast=toast?<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:C.sf2,color:C.tx,padding:"9px 18px",borderRadius:8,fontSize:14,fontWeight:600,zIndex:300,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",border:`1px solid ${C.bd}`}}>{toast}</div>:null;
+  if(loading)return <div style={{...$.app,display:"flex",flexDirection:"column",gap:12,alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:24,textAlign:"center"}}>
+    {bootErr?<><div style={{fontWeight:800,color:C.err}}>⚠ Daten konnten nicht geladen werden</div><div style={{fontSize:12,color:C.tx2}}>{bootErr}</div><div style={{fontSize:12,color:C.tx2}}>Ist FensterCheck in einem anderen Tab geöffnet? Diesen schließen und neu laden.</div><button style={{...$.btn,...$.bP}} onClick={()=>location.reload()}>Neu laden</button></>
+    :<span style={{color:C.tx2}}>{bootMsg||"Laden…"}</span>}</div>;
+  const Toast=(toast||busyMsg)?<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:C.sf2,color:C.tx,padding:"9px 18px",borderRadius:8,fontSize:14,fontWeight:600,zIndex:300,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",border:`1px solid ${C.bd}`}}>{busyMsg||toast}</div>:null;
 
   // HOME
-  if(view==="home")return <div className="app" style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTER-MESSERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("info")}>ℹ️</button><button style={$.hdrB} onClick={()=>setView("settings")}>⚙</button></div><div className="body" style={$.body}>
+  if(view==="home")return <div className="app" style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTERERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("info")}>ℹ️</button><button style={$.hdrB} onClick={()=>setView("settings")}>⚙</button></div><div className="body" style={$.body}>
     {projects.length>0&&projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}
     <button style={{...$.btn,...$.bP,...$.bBl,marginTop:16}} onClick={createProj}>+ Neues Projekt</button>
     <label style={{...$.btn,...$.bO,...$.bBl,marginTop:8,cursor:"pointer"}}>
-      📂 Projekt importieren (JSON)
-      <input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>impJSON(ev.target.result,false);r.readAsText(f);e.target.value="";}}/>
+      📂 Projekt importieren (ZIP oder JSON)
+      <input type="file" accept=".zip,.json,application/zip,application/json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];e.target.value="";impFile(f,false);}}/>
     </label>
   </div>{Toast}</div>;
 
   // GLOBALE EINSTELLUNGEN
   if(view==="settings")return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Einstellungen</div></div><div className="body" style={$.body}>
+    <div style={$.card}><div style={$.cardT}>Speicher auf diesem Gerät</div>
+      {storInfo?<div style={{fontSize:13,lineHeight:1.6}}>Belegt: <b>{(storInfo.used/1048576).toFixed(1)} MB</b>{storInfo.quota?<> von ca. {(storInfo.quota/1073741824).toFixed(1)} GB</>:null}<br/>Dauerhaft gesichert: <b style={{color:storInfo.per?C.ok:C.warn}}>{storInfo.per===null?"unbekannt":storInfo.per?"ja":"nein"}</b></div>:<div style={{fontSize:12,color:C.tx2}}>Keine Angaben verfügbar.</div>}
+      <div style={{fontSize:11,color:C.tx2,marginTop:6,lineHeight:1.5}}>Fotos werden in {PH_MAX} px Auflösung gespeichert. iPhone/iPad: App über „Teilen → Zum Home-Bildschirm" installieren – sonst kann Safari Daten nach 7 Tagen ohne Nutzung löschen. Regelmässig eine ZIP-Sicherung erstellen.</div>
+    </div>
     <div style={$.card}><div style={$.cardT}>Standardwerte (Thermisch) – Global</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:10}}>Referenzwerte zur Vorbelegung von Uf, Ug, g und ψ – frei anpassbar, keine Gewähr. Gelten für alle Projekte; einzelne Projekte können sie in der Einrichtung überschreiben.</div>
       <ThermalEditor tables={globalTD} onChange={t=>{saveGlobalTD(t);setGlobalTD(t);}}/>
@@ -654,15 +873,15 @@ function App(){
     <div style={$.card}><div style={$.cardT}>Kurzanleitung</div>
       <ol style={{margin:0,paddingLeft:18,fontSize:13,lineHeight:1.55}}>
         <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und Profil wählen.</li>
-        <li><b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren.</li>
+        <li>Optional <b>Gebäudeteile/Trakte</b> in der Einrichtung anlegen. <b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren, mit <b>✎</b> umbenennen.</li>
         <li><b>Fenster</b> hinzufügen (auch mehrere identische auf einmal); optional die <b>Geometrie</b> skizzieren und Felder antippen → Öffnungsart, Bandseite, Verglasung.</li>
-        <li><b>Verglasung</b> öffnen → Daten erfassen (Ug/g/ψ mit Standardwerten), <b>Gasfüllgrad</b> optional messen, <b>Fotos</b> (📷 Kamera / 🖼️ Galerie).</li>
+        <li><b>Verglasung</b> öffnen → Daten erfassen (Ug/g/ψ mit Standardwerten), optional <b>Messungen</b> (Gasfüllgrad, Ug gemessen, Taupunkt – beliebig viele Werte), <b>Fotos</b> (📷 Kamera / 🖼️ Galerie; antippen zum Vergrößern).</li>
         <li><b>Thermische Standardwerte</b> global oder pro Projekt unter <b>⚙ Einstellungen</b> anpassen.</li>
-        <li><b>Export</b> als Excel/CSV; <b>Backup</b> als JSON (mit oder ohne Fotos).</li>
+        <li><b>Export</b> als Excel/CSV; <b>Sicherung</b> als ZIP (Daten + Fotos) oder JSON (nur Daten).</li>
       </ol>
     </div>
     <div style={$.card}><div style={$.cardT}>Daten & Datenschutz</div>
-      <div style={{fontSize:13,lineHeight:1.5}}>Alle Daten bleiben <b>lokal auf dem Gerät</b> (IndexedDB/localStorage); es findet <b>keine Übertragung an einen Server</b> statt. Bitte regelmässig ein JSON-Backup erstellen – beim Löschen der Browserdaten gehen die Erfassungen sonst verloren. Die App ist für Suchmaschinen ausgeblendet (noindex) und nur per Link erreichbar.</div>
+      <div style={{fontSize:13,lineHeight:1.5}}>Alle Daten bleiben <b>lokal auf dem Gerät</b> (IndexedDB/localStorage); es findet <b>keine Übertragung an einen Server</b> statt. Bitte regelmässig eine ZIP-Sicherung erstellen – beim Löschen der Browserdaten gehen die Erfassungen sonst verloren. Auf dem iPhone die App zum Home-Bildschirm hinzufügen, damit Safari die Daten nicht nach 7 Tagen ohne Nutzung entfernt. Die App ist für Suchmaschinen ausgeblendet (noindex) und nur per Link erreichbar.</div>
     </div>
     <div style={$.card}><div style={$.cardT}>Impressum</div>
       <div style={{fontSize:13,lineHeight:1.5}}>Fachhochschule Nordwestschweiz (FHNW)<br/>Institut für Energie am Bau (INEB)<br/>Kontakt: <a href="mailto:gregor.steinke@fhnw.ch" style={{color:C.ac}}>gregor.steinke@fhnw.ch</a></div>
@@ -701,6 +920,16 @@ function App(){
         <div style={{flex:1}}><label style={$.lbl}>Feuchte innen [%rF]</label><input style={$.inp} type="number" value={p.feuchteInnen||""} onChange={e=>setProj({...p,feuchteInnen:e.target.value})}/></div>
       </div>
     </div>
+    <div style={$.card}><div style={$.cardT}>Gebäudeteile / Trakte</div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Optional: Ebene über Geschoss und Raum, z.B. „Schulhaus", „Turnhalle", „Trakt A". Räume werden in der Raumliste danach gruppiert.</div>
+      {traktList(p).map((t,i,a)=>{const cnt=(p.rooms||[]).filter(r=>r.trakt===t).length;return <div key={t} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 0",borderBottom:`1px solid ${C.bd}`}}>
+        <span style={{flex:1,fontWeight:600,fontSize:14}}>🏢 {t} <span style={{fontSize:11,color:C.tx3,fontWeight:400}}>· {cnt} {cnt===1?"Raum":"Räume"}</span></span>
+        <button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px",opacity:i?1:0.3}} disabled={!i} onClick={()=>moveTrakt(t,-1)}>↑</button>
+        <button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px",opacity:i<a.length-1?1:0.3}} disabled={i>=a.length-1} onClick={()=>moveTrakt(t,1)}>↓</button>
+        <button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px"}} onClick={()=>{const n=prompt("Gebäudeteil umbenennen",t);if(n!=null)renTrakt(t,n);}}>✎</button>
+        <button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px",color:C.err}} onClick={()=>delTrakt(t)}>🗑</button></div>;})}
+      <div style={{display:"flex",gap:6,marginTop:8}}><input style={{...$.inp,...$.inpS}} value={newTrakt} onChange={e=>setNewTrakt(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){addTrakt(newTrakt);setNewTrakt("");}}} placeholder="Neuer Gebäudeteil"/><button style={{...$.btn,...$.bP,...$.bS}} onClick={()=>{addTrakt(newTrakt);setNewTrakt("");}}>+</button></div>
+    </div>
     <div style={$.card}><div style={$.cardT}>Optionen</div><Tog label="Datenquelle erfassen (M/H/P)" value={!!p.showSrc} onChange={v=>setProj({...p,showSrc:v})}/><div style={{fontSize:11,color:C.tx2,marginTop:2}}>Blendet die Quelle-Auswahl (Messwert/Hersteller/Planung) je Wert ein.</div></div>
     <div style={$.card}><div style={$.cardT}>Modus</div>{hasData(p)&&<div style={{fontSize:11,color:C.warn,marginBottom:6}}>⚠ Modus kann nicht geändert werden, da bereits Messdaten vorhanden sind.</div>}<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Standard: „Fenster + Verglasung" (mit Geometrie & Rahmen). „Nur Verglasungen" nur für reine Glaserfassung ohne Fensterdaten.</div><div style={{display:"flex",gap:8}}>{[["fenster","⊞","Fenster + Verglasung"],["verglasung","◻","Nur Verglasungen"]].map(([m,i,t])=><div key={m} onClick={()=>trySetModus(m)} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center",opacity:hasData(p)&&p.modus!==m?0.4:1}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Zustand Rahmen</div><div style={{display:"flex",gap:4}}>{["Keine","Einfach","Freitext","Detailliert"].map(z=><div key={z} onClick={()=>setProj({...p,zustandModus:z})} style={{flex:1,padding:"7px 2px",borderRadius:6,border:`1px solid ${(p.zustandModus||"Keine")===z?C.ac:C.bd}`,background:(p.zustandModus||"Keine")===z?C.acBg:"transparent",cursor:"pointer",textAlign:"center",fontSize:11,fontWeight:600}}>{z}</div>)}</div></div>
@@ -728,7 +957,7 @@ function App(){
 
     <div style={$.card}><div style={$.cardT}>Raumimport (CSV)</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:4}}>Pflicht: <b>geschoss</b>, <b>raumnummer</b> (opt. <b>raumid</b>)</div>
-      <div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Optional: <b>verglasungen</b>, <b>fenster</b>, <b>verglasungen_je_fenster</b>, <b>fenster_nr</b></div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Optional: <b>gebaeudeteil</b>, <b>verglasungen</b>, <b>fenster</b>, <b>verglasungen_je_fenster</b>, <b>fenster_nr</b></div>
       <div style={{display:"flex",gap:6,marginBottom:6}}>
         <label style={{...$.btn,...$.bO,...$.bS,flex:1,cursor:"pointer"}}>
           📂 CSV-Datei auswählen
@@ -756,44 +985,51 @@ function App(){
       <textarea style={{...$.inp,minHeight:50,fontFamily:"monospace",fontSize:11}} value={impTxt} onChange={e=>setImpTxt(e.target.value)} placeholder={"geschoss;raumnummer;verglasungen\nEG;101;6\nOG1;201;4\n\noder je Fenster:\ngeschoss;raumnummer;fenster_nr;verglasungen\nEG;101;F1;4\nEG;101;F2;3\nEG;101;F3;4"}/>
       <button style={{...$.btn,...$.bP,...$.bBl,marginTop:6}} onClick={impRooms}>Importieren</button>
     </div>
-    <div style={$.card}><div style={$.cardT}>Räume zusammenführen</div><div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Räume aus einem JSON-Backup eines anderen Geräts in dieses Projekt übernehmen. Bereits vorhandene Räume werden nicht dupliziert.</div><label style={{...$.btn,...$.bO,...$.bS,cursor:"pointer"}}>📂 JSON-Datei auswählen<input type="file" accept=".json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>impJSON(ev.target.result,true);r.readAsText(f);e.target.value="";}}} /></label></div>
+    <div style={$.card}><div style={$.cardT}>Räume zusammenführen</div><div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Räume aus einer Sicherung (ZIP mit Fotos oder JSON) eines anderen Geräts in dieses Projekt übernehmen. Bereits vorhandene Räume werden nicht dupliziert.</div><label style={{...$.btn,...$.bO,...$.bS,cursor:"pointer"}}>📂 ZIP/JSON-Datei auswählen<input type="file" accept=".zip,.json,application/zip,application/json" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];e.target.value="";impFile(f,true);}} /></label></div>
     <div style={$.card}><div style={$.cardT}>Legende</div><div style={{display:"flex",gap:12,fontSize:12}}><span><b style={{color:C.sM}}>M</b> Messwert</span><span><b style={{color:C.sH}}>H</b> Herstellerang.</span><span><b style={{color:C.sP}}>P</b> Planungsdaten</span></div></div>
     {p.id&&projects.find(x=>x.id===p.id)&&<div style={{...$.card,borderColor:C.err+"40"}}><button style={{...$.btn,...$.bD,...$.bS}} onClick={()=>{if(confirm("Projekt löschen?"))delProj(p.id);}}>Projekt löschen</button></div>}
   </div>{Toast}</div>;}
 
   // SURVEY
-  if(view==="survey"){const p=proj;const s=pSt(p);
-    const byF={};(p.rooms||[]).forEach(r=>{const f=r.geschoss||"?";if(!byF[f])byF[f]=[];byF[f].push(r);});
-    const fls=FLOORS.filter(f=>byF[f]);Object.keys(byF).forEach(f=>{if(!fls.includes(f))fls.push(f);});
-    const togFloor=f=>setCollapsed(prev=>({...prev,[f]:!prev[f]}));
+  if(view==="survey"){const p=proj;const s=pSt(p);const tl=traktList(p),useT=tl.length>0;
+    const tog=k=>setCollapsed(prev=>({...prev,[k]:!prev[k]}));
+    const openAdd=t=>{setFmR(f=>({...f,trakt:t!==undefined?t:(f.trakt||""),raumnummer:"",raumId:""}));setModal("addR");};
+    const roomLi=rm=>{const rs=rSt(rm);const pct=rs.g>0?Math.round(rs.e/rs.g*100):0;return <div key={rm.id} style={$.li} onClick={()=>{setRoom(rm);setView("room");}}><div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>{rm.raumnummer||rm.raumId||"—"}{rm.raumId&&rm.raumnummer&&<span style={{fontSize:11,color:C.tx2,marginLeft:5}}>({rm.raumId})</span>}</div><div style={{fontSize:11,color:C.tx2}}>{rs.g} Vgl · {rs.m} M</div></div><div style={{display:"flex",alignItems:"center",gap:6}}>{pct>=100?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:pct>0?<span style={{...$.badge,background:C.warnBg,color:C.warn}}>{pct}%</span>:null}<span style={{color:C.tx3}}>›</span></div></div>;};
+    const floorBlock=(t,rooms)=>{const byF={};rooms.forEach(r=>{const f=r.geschoss||"?";(byF[f]=byF[f]||[]).push(r);});const fls=FLOORS.filter(f=>byF[f]);Object.keys(byF).forEach(f=>{if(!fls.includes(f))fls.push(f);});
+      return fls.map(fl=>{const key=t+"|"+fl,isCol=collapsed[key];return <div key={key} style={{marginBottom:10}}>
+        <div onClick={()=>tog(key)} style={{...$.cardT,display:"flex",alignItems:"center",gap:6,cursor:"pointer",userSelect:"none"}}>
+          <span style={{fontSize:14,transition:"transform 0.2s",transform:isCol?"rotate(-90deg)":"rotate(0deg)"}}>▼</span>
+          <span style={{...$.badge,background:C.acBg,color:C.ac}}>{fl}</span><span>{byF[fl].length} {byF[fl].length===1?"Raum":"Räume"}</span>
+        </div>
+        {!isCol&&byF[fl].map(roomLi)}</div>;});};
+    const tGroups=useT?[...tl,""].map(t=>({t,rooms:(p.rooms||[]).filter(r=>(r.trakt||"")===t)})).filter(g=>g.t||g.rooms.length):[];
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{s.rooms}</div><div style={$.statL}>Räume</div></div><div style={$.stat}><div style={$.statV}>{s.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{s.m}</div><div style={$.statL}>Mess.</div></div><div style={$.stat}><div style={$.statV}>{s.ph}</div><div style={$.statL}>Fotos</div></div></div>
     <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler");}}} >📊 Excel</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doCSVExport(p);flash("CSV ✓");}}>📄 CSV</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p);flash("Backup ✓");}}>💾 Backup (mit Fotos)</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p,true);flash("Daten-Backup ✓");}}>📃 Daten (o. Fotos)</button>
-      {s.ph>0&&<button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={async()=>{flash("Fotos...");const n=await doPhotoExport(p);flash(`${n} Fotos ✓`);}}>📷 Fotos ({s.ph})</button>}
-    </div></div>
-    {fls.length===0?<div style={$.empty}><div style={{fontSize:38,marginBottom:8}}>🏢</div><div style={{fontWeight:700}}>Keine Räume</div></div>
-    :fls.map(fl=>{const isCol=collapsed[fl];return <div key={fl} style={{marginBottom:14}}>
-      <div onClick={()=>togFloor(fl)} style={{...$.cardT,display:"flex",alignItems:"center",gap:6,cursor:"pointer",userSelect:"none"}}>
-        <span style={{fontSize:14,transition:"transform 0.2s",transform:isCol?"rotate(-90deg)":"rotate(0deg)"}}>▼</span>
-        <span style={{...$.badge,background:C.acBg,color:C.ac}}>{fl}</span>
-        <span>{byF[fl].length} Räume</span>
-        <span style={{fontSize:10,color:C.tx3,marginLeft:"auto"}}>{isCol?"ausblenden":"anzeigen"}</span>
-      </div>
-      {!isCol&&byF[fl].map(rm=>{const rs=rSt(rm);const pct=rs.g>0?Math.round(rs.e/rs.g*100):0;return <div key={rm.id} style={$.li} onClick={()=>{setRoom(rm);setView("room");}}><div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>{rm.raumnummer||rm.raumId||"—"}{rm.raumId&&rm.raumnummer&&<span style={{fontSize:11,color:C.tx2,marginLeft:5}}>({rm.raumId})</span>}</div><div style={{fontSize:11,color:C.tx2}}>{rs.g} Vgl · {rs.m} M</div></div><div style={{display:"flex",alignItems:"center",gap:6}}>{pct>=100?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:pct>0?<span style={{...$.badge,background:C.warnBg,color:C.warn}}>{pct}%</span>:null}<span style={{color:C.tx3}}>›</span></div></div>;})}
-    </div>;})}
-    <button style={{...$.btn,...$.bO,...$.bBl,marginTop:6}} onClick={()=>{setFmR({geschoss:"EG",raumnummer:"",raumId:""});setModal("addR");}}>+ Raum hinzufügen</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} disabled={!!busyMsg} onClick={async()=>{setBusyMsg("ZIP wird erstellt…");try{const r=await doZipExport(p,(i,t)=>setBusyMsg(`ZIP wird erstellt… ${i}/${t}`));flash(`ZIP ✓ (${r.n} Fotos)`+(r.miss?` – ${r.miss} fehlen`:""));}catch(e){console.error(e);flash("ZIP fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");}}>📦 Sicherung: Daten + Fotos (ZIP)</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p);flash("Daten ✓");}}>📃 Nur Daten (JSON)</button>
+    </div><div style={{fontSize:10,color:C.tx3,marginTop:6}}>Die ZIP-Sicherung enthält alle Fotos (Ordner „fotos", lesbar benannt) und lässt sich auf jedem Gerät wieder importieren.</div></div>
+    {(p.rooms||[]).length===0&&!useT?<div style={$.empty}><div style={{fontSize:38,marginBottom:8}}>🏢</div><div style={{fontWeight:700}}>Keine Räume</div><div style={{fontSize:12,marginTop:6}}>Mehrere Gebäudeteile/Trakte? In der Einrichtung (⚙) anlegen.</div></div>
+    :useT?tGroups.map(g=>{const key="T:"+g.t,isCol=collapsed[key];return <div key={key} style={{...$.card,padding:"10px 12px"}}>
+        <div onClick={()=>tog(key)} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",userSelect:"none",marginBottom:isCol?0:10}}>
+          <span style={{fontSize:13,color:C.tx2,transition:"transform 0.2s",transform:isCol?"rotate(-90deg)":"rotate(0deg)"}}>▼</span>
+          <span style={{fontWeight:800,fontSize:15,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🏢 {g.t||"Ohne Gebäudeteil"}</span>
+          <span style={{fontSize:11,color:C.tx2}}>{g.rooms.length} {g.rooms.length===1?"Raum":"Räume"}</span>
+        </div>
+        {!isCol&&<>{floorBlock(g.t,g.rooms)}<button style={{...$.btn,...$.bO,...$.bS,...$.bBl}} onClick={()=>openAdd(g.t)}>+ Raum {g.t?"in «"+g.t+"»":"ohne Gebäudeteil"}</button></>}
+      </div>;})
+    :floorBlock("",p.rooms||[])}
+    <button style={{...$.btn,...$.bO,...$.bBl,marginTop:6}} onClick={()=>openAdd()}>+ Raum hinzufügen</button>
   </div>
-    {modal==="addR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Raum hinzufügen</div><div style={{marginBottom:8}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={fmR.geschoss} onChange={e=>setFmR({...fmR,geschoss:e.target.value})}>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div><div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} value={fmR.raumnummer} onChange={e=>setFmR({...fmR,raumnummer:e.target.value})} placeholder="z.B. 101 oder Turnhalle" autoFocus/></div><div style={{marginBottom:14}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={fmR.raumId} onChange={e=>setFmR({...fmR,raumId:e.target.value})}/></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={addRoom}>Hinzufügen</button></div></div>}
+    {modal==="addR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Raum hinzufügen</div><TraktPick value={fmR.trakt||""} list={tl} onChange={v=>setFmR({...fmR,trakt:v})}/><div style={{marginBottom:8}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={fmR.geschoss} onChange={e=>setFmR({...fmR,geschoss:e.target.value})}>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div><div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} value={fmR.raumnummer} onChange={e=>setFmR({...fmR,raumnummer:e.target.value})} placeholder="z.B. 101 oder Turnhalle" autoFocus/></div><div style={{marginBottom:14}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={fmR.raumId} onChange={e=>setFmR({...fmR,raumId:e.target.value})}/></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={addRoom}>Hinzufügen</button></div></div>}
   {Toast}</div>;}
 
   // ROOM
   if(view==="room"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);if(!rm){setView("survey");return null;}
     const rs=rSt(rm);const isV=p.modus==="verglasung";const ff=fFs();const vf=vFs();
-  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}</div><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div><button style={$.hdrB} onClick={()=>setEdR({trakt:rm.trakt||"",geschoss:rm.geschoss||"EG",raumnummer:rm.raumnummer||"",raumId:rm.raumId||""})} title="Raum bearbeiten">✎</button><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
     {/* Quick add with custom input */}
     {isV&&<div style={{...$.card,padding:10}}>
@@ -813,7 +1049,7 @@ function App(){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:8,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
             <span style={{fontWeight:800,fontSize:15}}>{f.nr}</span>
-            {lm&&<span style={{fontFamily:"monospace",fontSize:15,color:C.ac,fontWeight:700}}>{lm.wert}%</span>}
+            {lm&&<span style={{fontFamily:"monospace",fontSize:14,color:C.ac,fontWeight:700}}>{fmtMs(lm)}</span>}
             {(v?.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf2,color:C.tx2}}>{v.messungen.length}×</span>}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
@@ -824,14 +1060,14 @@ function App(){
         </div>
         {vf.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{vf.slice(0,3).map(([k,d])=><div key={k} style={{flex:1,minWidth:80}}>{d.t==="select"?<select style={{...$.sel,...$.selS,fontSize:11}} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}><option value="">{getDef(k,f,v)?`Std: ${getDef(k,f,v)}`:d.label.split(" ")[0]+"..."}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>:<DInp style={{...$.inp,...$.inpS,fontSize:11}} placeholder={getDef(k,f,v)||d.label.split("[")[0]} value={v?.data?.[k]||""} onCommit={val=>setFV(rm.id,f.id,v.id,k,val)}/>}</div>)}</div>}
       </div>;}
-      else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16}}>🪟 {f.nr}</span><div style={{display:"flex",alignItems:"center",gap:6}}>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button></div></div>
+      else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster umbenennen" onClick={()=>{const n=prompt("Fenster-Nr. / Bezeichnung",f.nr);if(n!=null)renFen(rm.id,f.id,n);}}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button></div></div>
         {ff.length>0&&<div style={{marginBottom:8}}>{ff.map(([k,d])=><FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={s=>setFS(rm.id,f.id,null,k,s)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>)}</div>}
         {hasZ()&&<ZustInp modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>}
         {isA("geometrie")&&<div style={{marginBottom:8}}><div style={$.cardT}>Fenstergeometrie</div><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>}
         {isA("rahmenmasse")&&<div style={{marginBottom:8}}><div style={$.cardT}>Rahmen-Abmessungen</div><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
-            <span style={{fontWeight:700,fontSize:13}}>Verglasung {v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700}}>{lm.wert}%</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}
+            <span style={{fontWeight:700,fontSize:13}}>Verglasung {v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:12}}>{fmtMs(lm)}</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
             <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:13,padding:"2px 4px"}} onClick={()=>{const last=(f.verglasungen||[]).length<=1;if(confirm(last?`Letzte Verglasung – Fenster ${f.nr} komplett löschen?`:`Verglasung ${v.nr} löschen?`))delVg(rm.id,f.id,v.id);}}>🗑</button>
@@ -845,6 +1081,12 @@ function App(){
     {isV?<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{addFen(rm.id);flash("Verglasung +");}}>+ Verglasung hinzufügen</button>
     :<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{setFmF({nr:`F${(rm.fenster?.length||0)+1}`,va:1});setModal("addF");}}>+ Fenster hinzufügen</button>}
   </div>
+    {edR&&<div style={$.modal} onClick={()=>setEdR(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Raum bearbeiten</div>
+      <TraktPick value={edR.trakt} list={traktList(p)} onChange={v=>setEdR({...edR,trakt:v})}/>
+      <div style={{marginBottom:8}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={edR.geschoss} onChange={e=>setEdR({...edR,geschoss:e.target.value})}>{(FLOORS.includes(edR.geschoss)?FLOORS:[edR.geschoss,...FLOORS]).map(f=><option key={f}>{f}</option>)}</select></div>
+      <div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} value={edR.raumnummer} onChange={e=>setEdR({...edR,raumnummer:e.target.value})}/></div>
+      <div style={{marginBottom:14}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={edR.raumId} onChange={e=>setEdR({...edR,raumId:e.target.value})}/></div>
+      <button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{if(!edR.raumnummer.trim()&&!edR.raumId.trim()){flash("Raum oder Raum-ID angeben");return;}setRoomProps(rm.id,{trakt:(edR.trakt||"").trim(),geschoss:edR.geschoss,raumnummer:edR.raumnummer.trim(),raumId:edR.raumId.trim()});setEdR(null);flash("Raum gespeichert");}}>Speichern</button></div></div>}
     {modal==="addF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Fenster hinzufügen</div>
       <div style={{marginBottom:8}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={fmF.nr} onChange={e=>setFmF({...fmF,nr:e.target.value})} autoFocus/></div>
       <div style={{marginBottom:6}}><label style={$.lbl}>Verglasungen (Start)</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,6].map(n=><button key={n} style={{...$.btn,flex:1,...((fmF.va||1)===n?$.bP:$.bO)}} onClick={()=>setFmF({...fmF,va:n})}>{n}</button>)}</div></div>
@@ -876,7 +1118,22 @@ function App(){
     {vf.length>0&&<div style={$.card}><div style={$.cardT}>Verglasung</div>{vf.map(([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={s=>setFS(rm.id,f.id,v.id,k,s)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>)}</div>}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
     <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
-    <div style={$.card}><div onClick={()=>setShowGas(g=>!g)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}><div style={{...$.cardT,marginBottom:0}}>Gasfüllgrad <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>· optional</span></div><div style={{display:"flex",alignItems:"center",gap:8}}>{(v.messungen?.length||0)>0&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:15}}>{v.messungen[v.messungen.length-1].wert}%</span>}<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span></div></div>{showGas&&<div style={{marginTop:12}}><NumPad value={numVal} onChange={setNumVal} onSubmit={val=>addMs(rm.id,f.id,v.id,val)}/>{(v.messungen?.length||0)>0&&<div style={{marginTop:10}}><div style={$.cardT}>Messungen ({v.messungen.length})</div>{v.messungen.map((m,mi)=><div key={mi} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:mi<v.messungen.length-1?`1px solid ${C.bd}`:"none"}}><div><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert}%</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div><button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:16,padding:4}} onClick={()=>delMs(rm.id,f.id,v.id,mi)}>×</button></div>)}</div>}</div>}</div>
+    {(()=>{const T=MS_TYPES[msT]||MS_TYPES.gas;const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.map((m,idx)=>({m,idx})).filter(x=>msTyp(x.m)===t)})).filter(g=>g.list.length);
+      return <div style={$.card}>
+        <div onClick={()=>setShowGas(g=>!g)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,cursor:"pointer"}}>
+          <div style={{...$.cardT,marginBottom:0}}>Messungen <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>· optional</span></div>
+          <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>{groups.map(g=>{const st=msStats(g.list.map(x=>x.m)),U=MS_TYPES[g.t];return <span key={g.t} style={{...$.badge,background:C.acBg,color:C.ac,fontFamily:"monospace"}}>{U.short} {st.n>1?"Ø ":""}{st.avg} {U.unit}{st.n>1?` ×${st.n}`:""}</span>;})}<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span></div>
+        </div>
+        {showGas&&<div style={{marginTop:12}}>
+          <div style={{display:"flex",gap:4,marginBottom:4}}>{MS_KEYS.map(t=><button key={t} style={{...$.btn,...$.bS,flex:1,padding:"7px 2px",flexDirection:"column",gap:1,...(msT===t?$.bP:$.bO)}} onClick={()=>{setMsT(t);if(!MS_TYPES[t].neg&&numVal.startsWith("-"))setNumVal(numVal.slice(1));}}><span style={{fontWeight:700}}>{MS_TYPES[t].label}</span><span style={{fontSize:10,opacity:0.8}}>{MS_TYPES[t].unit}</span></button>)}</div>
+          <NumPad value={numVal} onChange={setNumVal} unit={T.unit} neg={!!T.neg} onSubmit={val=>addMs(rm.id,f.id,v.id,msT,val)}/>
+          <div style={{fontSize:10,color:C.tx3,marginTop:6}}>Beliebig viele Werte je Messart möglich – jeder Wert wird mit Zeitstempel gespeichert.</div>
+          {groups.map(g=>{const st=msStats(g.list.map(x=>x.m)),U=MS_TYPES[g.t];return <div key={g.t} style={{marginTop:12}}>
+            <div style={{...$.cardT,marginBottom:4}}>{U.label} ({st.n}){st.n>1&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3,letterSpacing:0}}> · Ø {st.avg} · {st.min} bis {st.max} {U.unit}</span>}</div>
+            {g.list.map(({m,idx},j)=><div key={idx} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:j<g.list.length-1?`1px solid ${C.bd}`:"none"}}><div><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert} {U.unit}</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span></div><button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:18,padding:"2px 8px"}} onClick={()=>{if(confirm(`${U.label} ${m.wert} ${U.unit} löschen?`))delMs(rm.id,f.id,v.id,idx);}}>×</button></div>)}
+          </div>;})}
+        </div>}
+      </div>;})()}
     {/* Navigation */}
     <div style={{display:"flex",gap:6,marginTop:8}}>
       {idx>0&&<button style={{...$.btn,...$.bO,flex:1}} onClick={()=>navTo(idx-1)}>← Vorherige</button>}
@@ -887,14 +1144,14 @@ function App(){
     {isV&&<button style={{...$.btn,...$.bO,...$.bBl,marginTop:8}} onClick={addAndGoExtra}>+ Weitere Verglasung</button>}
   </div>
   {/* Confirm dialog for unsaved data */}
-  {confirmNav&&<ConfirmDialog message="Es gibt einen nicht gespeicherten Messwert im Numpad. Ohne Speichern fortfahren?" onYes={()=>{setNumVal("");confirmNav.action();setConfirmNav(null);}} onNo={()=>setConfirmNav(null)}/>}
+  {confirmNav&&<ConfirmDialog message="Es gibt einen noch nicht gespeicherten Messwert im Ziffernblock. Ohne Speichern fortfahren?" onYes={()=>{setNumVal("");confirmNav.action();setConfirmNav(null);}} onNo={()=>setConfirmNav(null)}/>}
   {Toast}</div>;}
 
   return null;
 }
 
 if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><App/></ErrorBoundary>);
 </script>
 </body>
 </html>

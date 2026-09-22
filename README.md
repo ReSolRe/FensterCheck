@@ -1,6 +1,6 @@
 # FensterCheck – Mobile Fenstererfassung
 
-Mobile PWA zur systematischen Erfassung von Fenstern bei Gebäudebegehungen: Geometrie, Rahmen, Verglasung, thermische Kennwerte, Zustand und Fotos (optional Gasfüllgrad-Messungen).
+Mobile PWA zur systematischen Erfassung von Fenstern bei Gebäudebegehungen: Gebäudeteile, Räume, Geometrie, Rahmen, Verglasung, thermische Kennwerte, Zustand und Fotos (1920 px). Optional Messreihen je Verglasung: Gasfüllgrad, Ug gemessen, Taupunkt.
 
 **Live:** https://resolre.github.io/FensterCheck/
 
@@ -53,7 +53,7 @@ zwischengespeichert. Die App funktioniert anschliessend vollständig offline:
 - Messungen erfassen und speichern ✓
 - Fotos aufnehmen ✓
 - Daten in IndexedDB persistent gespeichert ✓
-- Export (CSV, Excel, JSON) offline möglich ✓
+- Export (Excel, CSV, ZIP-Sicherung, JSON) offline möglich ✓
 
 **Wichtig:** Beim ersten Aufruf muss eine Internetverbindung bestehen,
 damit die App und ihre Bibliotheken geladen und gecacht werden. Alle
@@ -65,9 +65,14 @@ nächsten Öffnen aktiv.
 
 - Alle Daten bleiben lokal auf dem Gerät (IndexedDB)
 - Keine Datenübertragung an Server
-- Regelmässig JSON-Backup erstellen (Export → 💾 Backup)
-- Für Mehrbenutzerbetrieb: JSON-Backup per AirDrop/E-Mail teilen
-  und im zweiten Gerät unter Einrichtung → "JSON zusammenführen" importieren
+- Fotos liegen als Bilddateien in einem eigenen IndexedDB-Speicher (nicht im Projektobjekt)
+- Regelmässig eine Sicherung erstellen: Projekt → 📦 „Sicherung: Daten + Fotos (ZIP)".
+  Die ZIP enthält `fenstercheck.json` und alle Fotos lesbar benannt im Ordner `fotos/`.
+- Für Mehrbenutzerbetrieb: ZIP (oder „Nur Daten (JSON)") per AirDrop/E-Mail teilen
+  und im zweiten Gerät unter Einrichtung → „Räume zusammenführen" importieren.
+  Ältere JSON-Backups mit eingebetteten Fotos lassen sich weiterhin importieren.
+- iPhone/iPad: App zum Home-Bildschirm hinzufügen – sonst kann Safari die Daten
+  nach 7 Tagen ohne Nutzung löschen.
 
 ## Browser-Kompatibilität
 
@@ -86,7 +91,7 @@ nächsten Öffnen aktiv.
 
 **Daten verschwunden:**
 → Browser-Daten / Websitedaten wurden gelöscht. Deshalb regelmässig
-  JSON-Backup erstellen.
+  ZIP-Sicherung erstellen.
 
 **Fotos werden nicht gespeichert:**
 → Kamerazugriff im Browser erlauben (Einstellungen → Datenschutz)
