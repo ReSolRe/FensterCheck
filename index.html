@@ -388,8 +388,10 @@ const msPhotos=(v,mId)=>mId?((v&&v.photos)||[]).filter(p=>p.msId===mId):[];     
 const msOrphans=v=>{const ids=new Set(((v&&v.messungen)||[]).map(m=>m.id));return ((v&&v.photos)||[]).filter(p=>p.ms&&!ids.has(p.msId));}; // Messfotos ohne passenden Messwert
 function msStats(list){const w=list.map(m=>m.wert).filter(x=>typeof x==="number"&&!isNaN(x));if(!w.length)return null;const s=[...w].sort((a,b)=>a-b);const r=x=>Math.round(x*100)/100;
   return {n:w.length,avg:r(w.reduce((a,b)=>a+b,0)/w.length),min:s[0],max:s[s.length-1],med:r(s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2)};}
-// Eine Verglasung gilt als "erfasst", wenn sie (oder ihr Fenster) dokumentiert ist – Messung, Foto, Daten oder Zustand.
-const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||Object.values(f?.data||{}).some(x=>x&&(""+x).trim())||!!f?.zustandRahmen;
+// Eine Verglasung gilt als "erfasst", wenn an ihr vor Ort gearbeitet wurde – Messung, Foto oder Daten an der Verglasung,
+// Foto oder Rahmenzustand am Fenster. Die Fenster-Daten zählen bewusst NICHT: sie sind oft aus Plänen vorbelegt (Fassade,
+// Bauart, Maße) und würden sonst alle Verglasungen des Fensters von Anfang an als erledigt zeigen.
+const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||!!f?.zustandRahmen;
 function parseCSV(text){const ls=text.trim().split(/\r?\n/);if(ls.length<2)return[];const h=ls[0].split(/[;,\t]/).map(x=>x.trim().toLowerCase());return ls.slice(1).map(l=>{const v=l.split(/[;,\t]/).map(x=>x.trim());const o={};h.forEach((x,i)=>{o[x]=v[i]||"";});return o;}).filter(r=>Object.values(r).some(v=>v));}
 
 // Export
