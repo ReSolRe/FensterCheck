@@ -398,6 +398,25 @@ async function storeDocCanvas(cv){const blob=await toJpeg(cv,DOC_Q);const tblob=
 // Anzahl Verortungen auf einer Unterlage (Räume + Fenster)
 function docPosCount(p,docId){let n=0;(p.rooms||[]).forEach(r=>{if(posOn(r,docId))n++;(r.fenster||[]).forEach(f=>{if(posOn(f,docId))n++;});});return n;}
 
+// Plan-Farben nach Fortschritt des aktiven Profils (vgDone): -1 ohne Verglasungen, 0 offen, 1 teilweise, 2 erledigt
+function doneState(p,pairs){const n=pairs.length;if(!n)return -1;const d=pairs.filter(([f,v])=>vgDone(p,f,v)).length;return d===0?0:d<n?1:2;}
+const roomState=(p,r)=>doneState(p,(r.fenster||[]).flatMap(f=>(f.verglasungen||[]).map(v=>[f,v])));
+const fenState=(p,f)=>doneState(p,(f.verglasungen||[]).map(v=>[f,v]));
+const ST_COL={"-1":"#94a3b8","0":"#f87171","1":"#fbbf24","2":"#34d399"};
+// Marker einer Unterlage: Räume (Punkt) und Fenster (Punkt bzw. Rechteck) mit Beschriftung und Status
+function planMarkers(p,doc){const out=[];(p.rooms||[]).forEach(r=>{const q=posOn(r,doc.id);if(q)out.push({key:"r:"+r.id,kind:"room",rId:r.id,x:q.x,y:q.y,label:r.raumnummer||r.raumId||"Raum",st:roomState(p,r)});
+  (r.fenster||[]).forEach(f=>{const q2=posOn(f,doc.id);if(q2)out.push({key:"f:"+f.id,kind:"fen",rId:r.id,fId:f.id,x:q2.x,y:q2.y,w:q2.w,h:q2.h,label:f.nr||"F",st:fenState(p,f)});});});return out;}
+// Noch nicht verortete Räume/Fenster für eine Unterlage. Grundriss: Räume passend zu Gebäudeteil/Geschoss, dazu Fenster bereits verorteter Räume.
+// Ansicht: Fenster passend zu Gebäudeteil/Fassade. alle=true: ohne Filter.
+function planCandidates(p,doc,alle){const trOk=r=>!doc.trakt||(r.trakt||"")===doc.trakt;const rooms=[],fenster=[];
+  (p.rooms||[]).forEach(r=>{if(doc.art==="grundriss"){if(!posOn(r,doc.id)&&(alle||(trOk(r)&&(!doc.geschoss||r.geschoss===doc.geschoss))))rooms.push(r);
+      if(posOn(r,doc.id))(r.fenster||[]).forEach(f=>{if(!posOn(f,doc.id))fenster.push({r,f});});}
+    else(r.fenster||[]).forEach(f=>{if(posOn(f,doc.id))return;const fa=(f.data&&f.data.fassade)||"";if(alle||(trOk(r)&&(!doc.fassade||fa===doc.fassade)))fenster.push({r,f});});});
+  return {rooms,fenster};}
+// Passende Pläne für Raum (Grundriss: Gebäudeteil + Geschoss) bzw. Fenster (Ansicht: Gebäudeteil + Fassade)
+function plansForRoom(p,r){return sortedDocs(p).filter(d=>d.art==="grundriss"&&(!d.trakt||!r.trakt||d.trakt===r.trakt)&&(!d.geschoss||d.geschoss===r.geschoss));}
+function plansForFen(p,r,f){const fa=(f.data&&f.data.fassade)||"";return sortedDocs(p).filter(d=>d.art==="ansicht"&&(!d.trakt||!r.trakt||d.trakt===r.trakt)&&(!d.fassade||!fa||d.fassade===fa));}
+
 // Minimaler ZIP-Writer (unkomprimiert): Fotos werden als Blob-Referenzen eingebunden statt in den Speicher kopiert
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
 function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
@@ -823,6 +842,68 @@ function DocImport({file,herkunft,tl,onSave,onClose}){
       </div>}
     </div></div>,document.body);
 }
+// Plan-Anzeige: ein Finger/Maus verschiebt (bzw. zieht im Modus «rechteck» ein Rechteck auf), zwei Finger zoomen, Mausrad zoomt,
+// Doppeltipp zoomt 2.5×. Marker haben konstante Bildschirmgröße und Beschriftung aus den Daten; Treffer werden selbst berechnet.
+function PlanView({doc,markers,mode,onTapMarker,onTapEmpty,onRect,focus}){
+  const wrap=useRef(null),ptrs=useRef(new Map()),gest=useRef(null),lastTap=useRef(null);const tf=useRef(null);
+  const[url,setUrl]=useState(null);const[miss,setMiss]=useState(false);const[,force]=useState(0);const redraw=()=>force(n=>n+1);const[draft,setDraft]=useState(null);
+  const W=doc.w||1000,H=doc.h||1000;
+  useEffect(()=>{let alive=true,u=null;setUrl(null);setMiss(false);if(!doc.photoId){setMiss(true);return;}
+    phGet(doc.photoId).then(r=>{if(!alive)return;if(r&&r.blob){u=URL.createObjectURL(r.blob);setUrl(u);}else setMiss(true);}).catch(()=>setMiss(true));
+    return()=>{alive=false;if(u)URL.revokeObjectURL(u);};},[doc.photoId]);
+  const fit=()=>{const el=wrap.current;return el&&el.clientWidth?Math.min(el.clientWidth/W,el.clientHeight/H):0.2;};
+  const reset=()=>{const el=wrap.current;if(!el)return;const f=fit();let s=f,x=(el.clientWidth-W*f)/2,y=(el.clientHeight-H*f)/2;
+    if(focus){s=Math.min(Math.max(f*3,0.35),1.2);x=el.clientWidth/2-focus.x*W*s;y=el.clientHeight/2-focus.y*H*s;}tf.current={s,x,y};redraw();};
+  useEffect(()=>{reset();const el=wrap.current;if(!el||typeof ResizeObserver==="undefined")return;let w0=el.clientWidth,h0=el.clientHeight;
+    const ro=new ResizeObserver(()=>{if(!w0||!h0){w0=el.clientWidth;h0=el.clientHeight;reset();return;}const t=tf.current;if(!t)return;   // Größe ändert sich (Leiste, Drehen): Mitte halten
+      const dx=(el.clientWidth-w0)/2,dy=(el.clientHeight-h0)/2;w0=el.clientWidth;h0=el.clientHeight;tf.current={...t,x:t.x+dx,y:t.y+dy};redraw();});ro.observe(el);return()=>ro.disconnect();},[doc.id,focus&&focus.x,focus&&focus.y]);
+  const clampS=s=>{const f=fit();return Math.min(Math.max(s,f*0.5),Math.max(3,f*6));};
+  const zoomAt=(cx,cy,k)=>{const t=tf.current;if(!t)return;const s=clampS(t.s*k),r=s/t.s;tf.current={s,x:cx-(cx-t.x)*r,y:cy-(cy-t.y)*r};redraw();};
+  useEffect(()=>{const el=wrap.current;if(!el)return;const wh=e=>{e.preventDefault();const b=el.getBoundingClientRect();zoomAt(e.clientX-b.left,e.clientY-b.top,e.deltaY<0?1.2:1/1.2);};
+    el.addEventListener("wheel",wh,{passive:false});return()=>el.removeEventListener("wheel",wh);},[doc.id]);
+  const local=e=>{const b=wrap.current.getBoundingClientRect();return [e.clientX-b.left,e.clientY-b.top];};
+  const toPlan=(cx,cy)=>{const t=tf.current;return [(cx-t.x)/(W*t.s),(cy-t.y)/(H*t.s)];};
+  const hit=(cx,cy)=>{const t=tf.current;let best=null,bd=1e9;markers.forEach(m=>{
+      if(m.w){const x0=t.x+m.x*W*t.s,y0=t.y+m.y*H*t.s,x1=x0+m.w*W*t.s,y1=y0+m.h*H*t.s;if(cx>=x0-4&&cx<=x1+4&&cy>=y0-4&&cy<=y1+4){const d=20+Math.sqrt(m.w*m.h)*100;if(d<bd){bd=d;best=m;}}}
+      else{const d=Math.hypot(cx-(t.x+m.x*W*t.s),cy-(t.y+m.y*H*t.s));if(d<24&&d<bd){bd=d;best=m;}}});return best;};
+  const down=e=>{if(!tf.current)return;try{wrap.current.setPointerCapture(e.pointerId);}catch(_){}const[cx,cy]=local(e);ptrs.current.set(e.pointerId,{x:cx,y:cy});
+    if(ptrs.current.size===1)gest.current={type:mode==="rechteck"?"rect":"pan",sx:cx,sy:cy,t0:Date.now(),moved:false,tx:tf.current.x,ty:tf.current.y,p0:toPlan(cx,cy)};
+    else if(ptrs.current.size===2){const[a,b]=[...ptrs.current.values()];gest.current={type:"pinch",d0:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),m0:[(a.x+b.x)/2,(a.y+b.y)/2],t0:{...tf.current}};setDraft(null);}};
+  const move=e=>{if(!ptrs.current.has(e.pointerId))return;const[cx,cy]=local(e);ptrs.current.set(e.pointerId,{x:cx,y:cy});const g=gest.current;if(!g)return;
+    if(g.type==="pinch"){if(ptrs.current.size<2)return;const[a,b]=[...ptrs.current.values()];const t=g.t0,s=clampS(t.s*Math.hypot(a.x-b.x,a.y-b.y)/g.d0),r=s/t.s,m=[(a.x+b.x)/2,(a.y+b.y)/2];
+      tf.current={s,x:m[0]-(g.m0[0]-t.x)*r,y:m[1]-(g.m0[1]-t.y)*r};redraw();return;}
+    if(!g.moved&&Math.hypot(cx-g.sx,cy-g.sy)>6)g.moved=true;if(!g.moved)return;
+    if(g.type==="pan"){tf.current={...tf.current,x:g.tx+cx-g.sx,y:g.ty+cy-g.sy};redraw();}
+    else{const[px,py]=toPlan(cx,cy),[qx,qy]=g.p0;setDraft([Math.min(px,qx),Math.min(py,qy),Math.abs(px-qx),Math.abs(py-qy)]);}};
+  const up=e=>{const had=ptrs.current.delete(e.pointerId);const g=gest.current;if(!had||!g)return;
+    if(g.type==="pinch"){if(ptrs.current.size===1){const[c]=[...ptrs.current.values()];gest.current={type:"pan",sx:c.x,sy:c.y,t0:0,moved:true,tx:tf.current.x,ty:tf.current.y};}else if(!ptrs.current.size)gest.current=null;return;}
+    gest.current=null;const[cx,cy]=local(e);
+    if(g.type==="rect"&&g.moved){setDraft(null);const[px,py]=toPlan(cx,cy),[qx,qy]=g.p0;const cl=v=>Math.min(1,Math.max(0,v));const x0=cl(Math.min(px,qx)),y0=cl(Math.min(py,qy)),x1=cl(Math.max(px,qx)),y1=cl(Math.max(py,qy));
+      if(x1-x0>0.003&&y1-y0>0.003&&onRect)onRect({x:x0,y:y0,w:x1-x0,h:y1-y0});return;}
+    if(g.moved||Date.now()-g.t0>600)return;
+    const lt=lastTap.current,now=Date.now();lastTap.current={t:now,x:cx,y:cy};
+    if(mode==="nav"&&lt&&now-lt.t<320&&Math.hypot(cx-lt.x,cy-lt.y)<30){lastTap.current=null;zoomAt(cx,cy,2.5);return;}
+    const m=hit(cx,cy);if(m){onTapMarker&&onTapMarker(m);return;}const[px,py]=toPlan(cx,cy);if(px>=0&&px<=1&&py>=0&&py<=1&&onTapEmpty)onTapEmpty(px,py);};
+  const t=tf.current||{s:0.2,x:0,y:0},k=1/t.s;
+  const zb={width:38,height:38,borderRadius:8,border:`1px solid ${C.bd}`,background:"rgba(20,27,36,0.85)",color:"#fff",fontSize:18,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"};
+  const cz=d=>{const el=wrap.current;if(el)zoomAt(el.clientWidth/2,el.clientHeight/2,d);};
+  return <div ref={wrap} style={{position:"relative",overflow:"hidden",width:"100%",height:"100%",touchAction:"none",background:"#f4f4f4",userSelect:"none",cursor:mode==="nav"?"grab":"crosshair"}}
+    onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
+    <div style={{position:"absolute",left:0,top:0,width:W,height:H,transform:`translate(${t.x}px,${t.y}px) scale(${t.s})`,transformOrigin:"0 0",willChange:"transform"}}>
+      {url?<img src={url} alt="" draggable={false} style={{width:W,height:H,display:"block",pointerEvents:"none",background:"#fff"}}/>
+        :<div style={{width:W,height:H,background:"#fff",display:"flex",alignItems:"center",justifyContent:"center",color:"#999",fontSize:Math.max(24,W/40)}}>{miss?"Bild fehlt (Unterlage ohne Bild importiert)":"Lädt…"}</div>}
+      {markers.map(m=>{const col=ST_COL[String(m.st)]||ST_COL["-1"];
+        if(m.w)return <div key={m.key} style={{position:"absolute",left:m.x*W,top:m.y*H,width:m.w*W,height:m.h*H,border:`${(m.sel?3.5:2)*k}px solid ${m.sel?C.ac:col}`,background:col+"38",boxSizing:"border-box",pointerEvents:"none"}}>
+          {(m.sel||m.w*W*t.s>=24)&&<div style={{position:"absolute",left:0,top:0,transform:`scale(${k})`,transformOrigin:"0 0",background:m.sel?C.ac:col,color:m.sel?"#fff":"#111",fontSize:11,fontWeight:800,padding:"1px 5px",borderRadius:"0 0 5px 0",whiteSpace:"nowrap"}}>{m.label}</div>}</div>;   // schmale Felder: Beschriftung erst beim Hineinzoomen
+        return <div key={m.key} style={{position:"absolute",left:m.x*W,top:m.y*H,width:0,height:0,pointerEvents:"none"}}><div style={{position:"absolute",left:0,top:0,transform:`scale(${k})`,transformOrigin:"0 0"}}>
+          <div style={{position:"absolute",left:m.kind==="room"?-13:-9,top:m.kind==="room"?-13:-9,width:m.kind==="room"?26:18,height:m.kind==="room"?26:18,borderRadius:m.kind==="room"?13:4,background:col,border:`${m.sel?3:2}px solid ${m.sel?C.ac:"#fff"}`,boxShadow:"0 1px 4px rgba(0,0,0,0.5)"}}/>
+          <div style={{position:"absolute",left:m.kind==="room"?16:12,top:-10,background:"rgba(11,15,20,0.85)",color:"#fff",fontSize:11,fontWeight:700,padding:"2px 6px",borderRadius:6,whiteSpace:"nowrap"}}>{m.label}</div></div></div>;})}
+      {draft&&<div style={{position:"absolute",left:draft[0]*W,top:draft[1]*H,width:draft[2]*W,height:draft[3]*H,border:`${2*k}px dashed ${C.ac}`,background:"rgba(77,163,255,0.18)",pointerEvents:"none"}}/>}
+    </div>
+    <div style={{position:"absolute",right:10,bottom:10,display:"flex",flexDirection:"column",gap:6}} onPointerDown={e=>e.stopPropagation()}>
+      <button style={zb} onClick={()=>cz(1.4)}>+</button><button style={zb} onClick={()=>cz(1/1.4)}>−</button><button style={{...zb,fontSize:15}} title="Ganzer Plan" onClick={()=>{const el=wrap.current;if(!el)return;const f=fit();tf.current={s:f,x:(el.clientWidth-W*f)/2,y:(el.clientHeight-H*f)/2};redraw();}}>⤢</button></div>
+  </div>;}
+
 // Fängt Darstellungsfehler ab (statt leerer Seite) – die Daten liegen bereits in IndexedDB
 class ErrorBoundary extends React.Component{
   constructor(p){super(p);this.state={err:null};}
@@ -1006,6 +1087,11 @@ function App(){
   const[impQueue,setImpQueue]=useState([]);      // Dateien, die nacheinander importiert werden {id,file,herkunft}
   const[editDoc,setEditDoc]=useState(null);const[viewDoc,setViewDoc]=useState(null);
   const docFileRef=useRef(),docCamRef=useRef();
+  // Plan-Ansicht: gewählte Unterlage, Bearbeiten-Modus, Werkzeug (nav|punkt|rechteck), Auswahl zum Verorten, Fokus, Rücksprung
+  const[planId,setPlanId]=useState(null);const[planEdit,setPlanEdit]=useState(false);const[planTool,setPlanTool]=useState("nav");
+  const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planFrom,setPlanFrom]=useState("survey");
+  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[planNew,setPlanNew]=useState(null);
+  const[fromPlan,setFromPlan]=useState(false);   // Raum/Messung aus dem Plan geöffnet → Rücksprung «← Plan»
   const[bootMsg,setBootMsg]=useState(""); // Fortschritt beim Start (Foto-Migration)
   const[bootErr,setBootErr]=useState(null);
   const[busyMsg,setBusyMsg]=useState(""); // länger laufende Aktionen (ZIP, Import)
@@ -1029,6 +1115,7 @@ function App(){
   // Track unsaved state
   useEffect(()=>{setHasUnsaved(numVal.length>0);},[numVal]);
   useEffect(()=>{setAufIn(null);setSzrSel(1);},[vg?.id]);   // neue Verglasung: Aufbau-Vorschlag und SZR 1
+  useEffect(()=>{if(!["plan","room","measure"].includes(view))setFromPlan(false);},[view]);
 
   const guardNav=(action)=>{
     if(hasUnsaved){setConfirmNav({action});}
@@ -1069,6 +1156,22 @@ function App(){
     let bid=null;mut(p=>{bid=delDocIn(p,d.id);});if(bid)phDel([bid]);flash("Unterlage entfernt");};
   const queueDocs=(files,herkunft)=>setImpQueue(q=>[...q,...files.map(file=>({id:uid(),file,herkunft}))]);
   const openDocs=from=>{setDocsFrom(from);setView("docs");};
+  // Plan öffnen: opts {focus:{x,y}, edit, sel:{kind,rId,fId,label}}
+  const openPlan=(docId,opts)=>{const o=opts||{};const d=((projRef.current&&projRef.current.docs)||[]).find(x=>x.id===docId);
+    setPlanId(docId);setPlanFocus(o.focus||null);setPlanEdit(!!o.edit);setPlanSel(o.sel||null);setPlanTool(o.edit?(d&&d.art==="ansicht"?"rechteck":"punkt"):"nav");
+    setPlanAlle(false);setPlanMenu(null);setPlanFrom(o.from||view);setView("plan");};
+  const setPos=(kind,rId,fId,docId,q)=>mut(p=>{const r=gR(p,rId);if(!r)return;const o=kind==="room"?r:gF(r,fId);if(o)setPosIn(o,docId,q);});
+  // Raum bzw. Fenster aus dem Plan öffnen (Fenster: erste noch offene Verglasung)
+  const openFromPlan=m=>{const p=projRef.current;const r=gR(p,m.rId);if(!r)return;setFromPlan(true);setRoom(r);
+    if(m.kind==="room"){setView("room");return;}const f=gF(r,m.fId);if(!f||!(f.verglasungen||[]).length){setView("room");return;}
+    const v=f.verglasungen.find(x=>!vgDone(p,f,x))||f.verglasungen[0];setFen(f);setVg(v);setNumVal("");setView("measure");};
+  // «im Plan zeigen» bzw. «im Plan verorten» für Raum/Fenster
+  const planFor=(kind,r,f)=>{const p=projRef.current,o=kind==="room"?r:f;const q=(o.pos||[]).find(x=>(p.docs||[]).some(d=>d.id===x.docId));
+    const sel={kind,rId:r.id,fId:f?f.id:undefined,label:kind==="room"?(r.raumnummer||r.raumId):f.nr};
+    if(q){openPlan(q.docId,{focus:q.w?{x:q.x+q.w/2,y:q.y+q.h/2}:{x:q.x,y:q.y},sel});return;}
+    const cand=kind==="room"?plansForRoom(p,r):plansForFen(p,r,f);if(cand.length){openPlan(cand[0].id,{edit:true,sel});flash("Noch nicht verortet – in den Plan tippen"+(kind==="fen"&&cand[0].art==="ansicht"?" bzw. Rechteck aufziehen":""));}
+    else flash(kind==="room"?"Kein passender Grundriss (Gebäudeteil/Geschoss) – unter 🗺 importieren":"Keine passende Ansicht (Fassade) – unter 🗺 importieren");};
+  const hasPlanFor=(kind,r,f)=>{const p=proj;const o=kind==="room"?r:f;return (o.pos||[]).some(x=>(p.docs||[]).some(d=>d.id===x.docId))||(kind==="room"?plansForRoom(p,r):plansForFen(p,r,f)).length>0;};
 
   // Import von ZIP (Daten + Fotos) oder JSON (auch alte Backups mit eingebetteten Fotos)
   const impFile=async(file,merge)=>{if(!file)return;setBusyMsg("Import läuft…");try{const d=await readProjectFile(file);
@@ -1281,8 +1384,60 @@ function App(){
   </div>{Toast}</div>;
 
   // SETUP
+  if(view==="plan"){const p=proj;const doc=((p&&p.docs)||[]).find(d=>d.id===planId);if(!doc){setView(p?"docs":"home");return null;}
+    const plans=sortedDocs(p).filter(isPlanDoc),isG=doc.art==="grundriss";
+    const selKey=planSel?(planSel.kind==="room"?"r:"+planSel.rId:"f:"+planSel.fId):null;
+    const markers=planMarkers(p,doc).map(m=>m.key===selKey?{...m,sel:true}:m);
+    const cand=planCandidates(p,doc,planAlle),rest=cand.rooms.length+cand.fenster.length;
+    const candList=[...cand.rooms.map(r=>({kind:"room",rId:r.id,label:r.raumnummer||r.raumId||"Raum",sub:r.geschoss})),...cand.fenster.map(({r,f})=>({kind:"fen",rId:r.id,fId:f.id,label:f.nr||"F",sub:r.raumnummer||r.raumId}))];
+    const pick=c=>{setPlanSel(c);setPlanTool(c.kind==="fen"&&!isG?"rechteck":"punkt");};
+    const advance=()=>{const i=candList.findIndex(c=>c.kind===planSel.kind&&(c.kind==="room"?c.rId===planSel.rId:c.fId===planSel.fId));const nx=candList.filter((c,j)=>j!==i&&c.kind===planSel.kind);
+      const nextC=nx.find((c,j)=>candList.indexOf(c)>i)||nx[0]||null;setPlanSel(nextC);if(!nextC)flash("Alle verortet ✓");};
+    const place=q=>{if(!planSel)return;setPos(planSel.kind,planSel.rId,planSel.fId,doc.id,q);const was=markers.some(m=>m.key===selKey);flash(`${planSel.label} ${was?"verschoben":"verortet"}`);
+      if(was)setPlanSel(null);else advance();};
+    const tapEmpty=(x,y)=>{if(!planEdit)return;if(planSel){if(planTool==="punkt"){place({x,y});return;}if(planTool==="rechteck"){flash("Rechteck aufziehen");return;}}
+      if(isG&&planTool!=="nav")setPlanNew({x,y,raumnummer:"",raumId:""});};
+    const tapMarker=m=>{if(planEdit)setPlanMenu(m);else openFromPlan(m);};
+    const nDone=markers.filter(m=>m.st===2).length,prof=profOf(p),mess=profMess(p);
+    const tb={...$.btn,...$.bS,padding:"5px 10px"};
+    return <div className="app" style={{...$.app,height:"100dvh",minHeight:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(planFrom==="plan"?"survey":planFrom||"survey")}>← Zurück</button>
+        {plans.length>1?<select style={{...$.sel,...$.selS,flex:1,minWidth:0,fontWeight:700}} value={doc.id} onChange={e=>{setPlanId(e.target.value);setPlanFocus(null);setPlanSel(null);setPlanTool(planEdit?(plans.find(d=>d.id===e.target.value)?.art==="ansicht"?"rechteck":"punkt"):"nav");}}>{plans.map(d=><option key={d.id} value={d.id}>{docTitle(d)}</option>)}</select>
+        :<div style={$.hdrT}>{docTitle(doc)}</div>}
+        <button style={{...$.hdrB,color:planEdit?C.ok:C.ac}} onClick={()=>{const e=!planEdit;setPlanEdit(e);setPlanSel(null);setPlanMenu(null);setPlanTool(e?(isG?"punkt":"rechteck"):"nav");}}>{planEdit?"✓ Fertig":"✎ Verorten"}</button></div>
+      <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",fontSize:11,color:C.tx2,flexWrap:"wrap",borderBottom:`1px solid ${C.bd}`}}>
+        {[["0","offen"],["1","teilweise"],["2",mess?"gemessen":"erfasst"]].map(([k,l])=><span key={k} style={{display:"inline-flex",alignItems:"center",gap:4}}><span style={{width:10,height:10,borderRadius:5,background:ST_COL[k],display:"inline-block"}}/>{l}</span>)}
+        <span style={{marginLeft:"auto"}}>{markers.length?`${nDone}/${markers.length} ${mess?"gemessen":"erledigt"}`:"noch nichts verortet"}{prof?` · ${prof.name}`:""}</span></div>
+      <div style={{flex:1,minHeight:0,position:"relative"}}>
+        <PlanView doc={doc} markers={markers} mode={planEdit?planTool:"nav"} focus={planFocus} onTapMarker={tapMarker} onTapEmpty={tapEmpty} onRect={q=>{if(!planSel){flash("Zuerst ein Fenster aus der Liste wählen");return;}place(q);}}/>
+        {!planEdit&&!markers.length&&<div style={{position:"absolute",left:10,right:60,top:10,background:"rgba(20,27,36,0.9)",color:C.tx,borderRadius:8,padding:"8px 10px",fontSize:12}}>Noch nichts verortet – «✎ Verorten» oben rechts: {isG?"Räume und Fenster antippen und in den Plan tippen.":"Fenster wählen und als Rechteck aufziehen."}</div>}
+      </div>
+      {planEdit&&<div style={{maxHeight:"38vh",overflowY:"auto",padding:"8px 12px 12px",borderTop:`1px solid ${C.bd}`,background:C.sf}}>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
+          <button style={{...tb,...(planTool==="nav"?$.bP:$.bO)}} onClick={()=>setPlanTool("nav")}>✋ Verschieben</button>
+          <button style={{...tb,...(planTool==="punkt"?$.bP:$.bO)}} onClick={()=>setPlanTool("punkt")}>● Punkt</button>
+          {!isG&&<button style={{...tb,...(planTool==="rechteck"?$.bP:$.bO)}} onClick={()=>setPlanTool("rechteck")}>▭ Rechteck</button>}
+          <label style={{fontSize:11,color:C.tx2,display:"inline-flex",alignItems:"center",gap:4,marginLeft:"auto",cursor:"pointer"}}><input type="checkbox" checked={planAlle} onChange={e=>setPlanAlle(e.target.checked)}/>alle {isG?"Räume":"Fenster"}</label></div>
+        {planSel?<div style={{fontSize:12,color:C.ac,marginBottom:6}}>Ausgewählt: <b>{planSel.label}</b> – {planTool==="rechteck"?"Rechteck über das Fenster aufziehen":planTool==="punkt"?"in den Plan tippen":"Werkzeug wählen"} <button style={{...tb,...$.bO,padding:"2px 8px",marginLeft:6}} onClick={()=>setPlanSel(null)}>✕</button></div>
+          :<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>{rest?`Nicht verortet (${rest}) – antippen und ${isG?"in den Plan tippen":"Rechteck aufziehen"}; die Auswahl springt danach zum nächsten Eintrag.`:"Alles verortet ✓"}{isG?" Tippen ins Leere legt einen neuen Raum an.":""}{isG||doc.fassade?"":" Tipp: Fassade der Ansicht angeben (🗺 → ✎), dann werden nur passende Fenster gezeigt."}</div>}
+        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{candList.map(c=>{const on=planSel&&c.kind===planSel.kind&&(c.kind==="room"?c.rId===planSel.rId:c.fId===planSel.fId);
+          return <button key={c.kind+(c.fId||c.rId)} style={{...tb,padding:"5px 9px",...(on?$.bP:$.bO)}} onClick={()=>pick(c)}>{c.kind==="room"?"● ":"▭ "}{c.label}{c.sub&&c.kind==="fen"?<span style={{fontSize:10,opacity:0.7,marginLeft:4}}>{c.sub}</span>:null}</button>;})}</div>
+      </div>}
+      {planMenu&&<div style={$.modal} onClick={()=>setPlanMenu(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:12}}>{planMenu.kind==="room"?"Raum":"Fenster"} {planMenu.label}</div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          <button style={{...$.btn,...$.bP}} onClick={()=>{const m=planMenu;setPlanMenu(null);openFromPlan(m);}}>Öffnen</button>
+          <button style={{...$.btn,...$.bO}} onClick={()=>{const m=planMenu;setPlanMenu(null);setPlanSel({kind:m.kind,rId:m.rId,fId:m.fId,label:m.label});setPlanTool(m.w?"rechteck":"punkt");flash(m.w?"Neues Rechteck aufziehen":"Neue Stelle antippen");}}>Verschieben</button>
+          <button style={{...$.btn,...$.bO,color:C.err}} onClick={()=>{const m=planMenu;setPlanMenu(null);setPos(m.kind,m.rId,m.fId,doc.id,null);flash("Verortung entfernt");}}>Verortung entfernen</button></div></div></div>}
+      {planNew&&<div style={$.modal} onClick={()=>setPlanNew(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Raum hier anlegen</div>
+        <div style={{fontSize:12,color:C.tx2,marginBottom:10}}>{[doc.trakt,doc.geschoss].filter(Boolean).join(" · ")||"Gebäudeteil/Geschoss aus dem Plan"}</div>
+        <div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} autoFocus value={planNew.raumnummer} onChange={e=>setPlanNew({...planNew,raumnummer:e.target.value})} placeholder="z.B. O.02 Schuh-Werkstatt"/></div>
+        <div style={{marginBottom:12}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={planNew.raumId} onChange={e=>setPlanNew({...planNew,raumId:e.target.value})}/></div>
+        <button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{const n=planNew;if(!n.raumnummer.trim()&&!n.raumId.trim()){flash("Bezeichnung angeben");return;}
+          mut(pp=>{pp.rooms.push({id:uid(),trakt:doc.trakt||"",geschoss:doc.geschoss||"EG",raumnummer:n.raumnummer.trim(),raumId:n.raumId.trim(),fenster:[],photos:[],pos:[{docId:doc.id,x:n.x,y:n.y}]});pp.trakte=traktList(pp);});setPlanNew(null);flash("Raum angelegt und verortet");}}>Anlegen</button></div></div>}
+      {Toast}</div>;}
+
   if(view==="docs"){const p=proj;if(!p){setView("home");return null;}const ds=sortedDocs(p),tl=traktList(p);const plans=ds.filter(isPlanDoc),other=ds.filter(d=>!isPlanDoc(d));
-    const openDoc=d=>{if(d.photoId)setViewDoc(d);};
+    const openDoc=d=>{if(isPlanDoc(d))openPlan(d.id,{from:"docs"});else if(d.photoId)setViewDoc(d);};
     const row=d=>{const n=docPosCount(p,d.id);return <div key={d.id} style={{...$.li,cursor:"default",gap:10}}>
       <div style={{width:64,height:64,flexShrink:0,cursor:d.photoId?"pointer":"default"}} onClick={()=>openDoc(d)}>{d.photoId?<Thumb ph={{id:d.photoId}}/>:<div style={{...$.phT,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:C.tx3,background:C.sf2,textAlign:"center"}}>Bild fehlt</div>}</div>
       <div style={{flex:1,minWidth:0,cursor:d.photoId?"pointer":"default"}} onClick={()=>openDoc(d)}>
@@ -1419,6 +1574,7 @@ function App(){
         <div onClick={()=>tog(key)} style={{...$.cardT,display:"flex",alignItems:"center",gap:6,cursor:"pointer",userSelect:"none"}}>
           <span style={{fontSize:14,transition:"transform 0.2s",transform:isCol?"rotate(-90deg)":"rotate(0deg)"}}>▼</span>
           <span style={{...$.badge,background:C.acBg,color:C.ac}}>{fl}</span><span>{byF[fl].length} {byF[fl].length===1?"Raum":"Räume"}</span>
+          {(()=>{const g=sortedDocs(p).find(d=>d.art==="grundriss"&&d.geschoss===fl&&(!t||!d.trakt||d.trakt===t));return g?<button style={{...$.btn,...$.bO,...$.bS,padding:"2px 9px",marginLeft:"auto",textTransform:"none",letterSpacing:0}} onClick={e=>{e.stopPropagation();openPlan(g.id,{from:"survey"});}}>🗺 Plan</button>:null;})()}
         </div>
         {!isCol&&byF[fl].map(roomLi)}</div>;});};
     const tGroups=useT?[...tl,""].map(t=>({t,rooms:(p.rooms||[]).filter(r=>(r.trakt||"")===t)})).filter(g=>g.t||g.rooms.length):[];
@@ -1466,7 +1622,7 @@ function App(){
       if(d.t==="masse")return <div key={k} style={{marginBottom:8}}><label style={$.lbl}>{d.label}</label><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>;
       return <FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;};
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
-  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div><button style={$.hdrB} onClick={()=>setEdR({trakt:rm.trakt||"",geschoss:rm.geschoss||"EG",raumnummer:rm.raumnummer||"",raumId:rm.raumId||""})} title="Raum bearbeiten">✎</button><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(fromPlan?"plan":"survey")}>{fromPlan?"← Plan":"← Räume"}</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div><button style={$.hdrB} onClick={()=>setEdR({trakt:rm.trakt||"",geschoss:rm.geschoss||"EG",raumnummer:rm.raumnummer||"",raumId:rm.raumId||""})} title="Raum bearbeiten">✎</button>{hasPlanFor("room",rm)&&<button style={$.hdrB} title="Im Plan zeigen / verorten" onClick={()=>planFor("room",rm)}>🗺</button>}<button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
     {mess&&<div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:C.tx2,marginBottom:3}}><span>{profOf(p).name}: {rs.e}/{rs.g} gemessen</span><button style={{...$.btn,...$.bO,...$.bS,padding:"3px 9px",fontSize:11}} onClick={()=>setShowAll(x=>!x)}>{showAll?"Kompakte Liste":"Alle Angaben"}</button></div><div style={$.prog}><div style={$.progF(rs.g?rs.e/rs.g*100:0)}/></div></div>}
     {/* Quick add with custom input */}
@@ -1498,7 +1654,7 @@ function App(){
         </div>
         {vf.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{vf.slice(0,3).map(([k,d])=><div key={k} style={{flex:1,minWidth:80}}>{d.t==="select"?<select style={{...$.sel,...$.selS,fontSize:11}} value={v?.data?.[k]||""} onChange={e=>setFV(rm.id,f.id,v.id,k,e.target.value)}><option value="">{getDef(k,f,v)?`Std: ${getDef(k,f,v)}`:d.label.split(" ")[0]+"..."}</option>{d.o.map(o=><option key={o}>{o}</option>)}</select>:<DInp style={{...$.inp,...$.inpS,fontSize:11}} placeholder={getDef(k,f,v)||d.label.split("[")[0]} value={v?.data?.[k]||""} onCommit={val=>setFV(rm.id,f.id,v.id,k,val)}/>}</div>)}</div>}
       </div>;}
-      else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster umbenennen" onClick={()=>{const n=prompt("Fenster-Nr. / Bezeichnung",f.nr);if(n!=null)renFen(rm.id,f.id,n);}}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button></div></div>
+      else return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster umbenennen" onClick={()=>{const n=prompt("Fenster-Nr. / Bezeichnung",f.nr);if(n!=null)renFen(rm.id,f.id,n);}}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}{hasPlanFor("fen",rm,f)&&<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>planFor("fen",rm,f)} title="Im Plan zeigen / verorten">🗺</button>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button></div></div>
         <div style={{marginBottom:8}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
         {secBlock(f,"lage")}{secBlock(f,"rahmen")}{secBlock(f,"funktion")}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
@@ -1542,7 +1698,7 @@ function App(){
     let all=[];rm.fenster.forEach(x=>x.verglasungen.forEach(y=>all.push({f:x,v:y})));const idx=all.findIndex(x=>x.v.id===v.id);const tot=all.length;const msd=all.filter(x=>vgDone(p,x.f,x.v)).length;
     const go=i=>{setFen(all[i].f);setVg(all[i].v);setNumVal("");};
     const navTo=(i)=>guardNav(()=>go(i));
-    const navBack=()=>guardNav(()=>setView("room"));
+    const navBack=()=>guardNav(()=>setView(fromPlan?"plan":"room"));
     const navRoom=()=>guardNav(()=>{setNumVal("");setView("room");});
 
     // Add extra verglasung and navigate to it
@@ -1598,7 +1754,7 @@ function App(){
           {orphans.length>0&&<div style={{marginTop:12}}><div style={{...$.cardT,marginBottom:4}}>Messfotos ohne Wert ({orphans.length})</div><ThumbRow photos={orphans} title="Messfoto ohne Wert" onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>}
         </div>}
       </div>;};
-  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div className="body" style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>{fromPlan?"← Plan":"← Raum"}</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div>{!isV&&hasPlanFor("fen",rm,f)&&<button style={$.hdrB} title="Im Plan zeigen / verorten" onClick={()=>guardNav(()=>planFor("fen",rm,f))}>🗺</button>}</div><div className="body" style={$.body}>
     <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} {mess?"gemessen":"erfasst"}</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
     {!isV&&isA("geometrie")&&f.geometrie&&(geoHasContent(f.geometrie)||geoCellCount(f.geometrie)>1)&&(()=>{const lf=geoLeaves(f.geometrie).find(l=>l.node.vg===v.id);  // Mini-Skizze: Feld dieser Verglasung hervorgehoben, Tippen springt zur anderen Verglasung
       return <div style={{...$.card,padding:10,display:"flex",gap:12,alignItems:"center"}}>
