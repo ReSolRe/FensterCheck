@@ -361,6 +361,43 @@ function delDocIn(p,docId){const d=(p.docs||[]).find(x=>x.id===docId);p.docs=(p.
 // Dateinamen der Unterlagen in der ZIP (Ordner «unterlagen»), nummeriert in Anzeige-Reihenfolge
 function docEntries(p){return sortedDocs(p).map((d,i)=>({doc:d,name:`${String(i+1).padStart(2,"0")}_${fnSafe(docTitle(d).replace(/\s*·\s*/g," "))||"Unterlage"}.jpg`}));}
 
+// Vorschläge aus dem Dateinamen: Name, Art, Geschoss, Fassade (z.B. „Grundriss_OG_1zu100" → Grundriss, OG1)
+function docGuess(fname){const base=String(fname||"").replace(/\.[a-z0-9]{2,4}$/i,"");const t=" "+base.replace(/[_\-–]+/g," ").replace(/\s+/g," ").trim().toLowerCase()+" ";
+  const has=re=>re.test(t);let art="sonstiges";
+  if(has(/ansicht|fassade|giebel/))art="ansicht";else if(has(/grundriss|grundriß|geschoss/))art="grundriss";else if(has(/schnitt|detail/))art="detail";
+  else if(has(/datenblatt|produktdaten|merkblatt|technische daten/))art="datenblatt";else if(has(/nachweis|energie|sia 380|geak|u wert|u-wert/))art="nachweis";
+  let m,geschoss="";
+  if((m=t.match(/ (\d)\s?\.?\s?og /)||t.match(/ og\s?(\d) /)))geschoss="OG"+m[1];else if(has(/ og |obergeschoss/))geschoss="OG1";
+  else if((m=t.match(/ (\d)\s?\.?\s?ug /)||t.match(/ ug\s?(\d) /)))geschoss="UG"+m[1];else if(has(/ ug |untergeschoss|keller/))geschoss="UG1";
+  else if(has(/ eg |erdgeschoss/))geschoss="EG";else if(has(/ (dg|da|dach|dachgeschoss) /))geschoss="DG";
+  if(geschoss&&!FLOORS.includes(geschoss))geschoss="";
+  if(art==="sonstiges"&&geschoss)art="grundriss";
+  const RI=[["nordost","NO"],["nordwest","NW"],["südost","SO"],["suedost","SO"],["südwest","SW"],["suedwest","SW"],["nord","N"],["süd","S"],["sued","S"],["ost","O"],["west","W"]];
+  const found=[];let rest=t;RI.forEach(([w,k])=>{if(rest.includes(w)){if(!found.includes(k))found.push(k);rest=rest.split(w).join(" ");}});
+  const fassade=art==="ansicht"&&found.length===1?found[0]:"";
+  return {name:base.replace(/[_]+/g," ").replace(/\s+/g," ").trim().slice(0,80),art,geschoss,fassade};}
+// Unterlagen-Bilder: lange Kante DOC_MAX, JPEG; Vorschau beim Zuschneiden DOC_PREV
+const DOC_MAX=3000,DOC_Q=0.85,DOC_PREV=1400;
+// pdf.js nur bei Bedarf laden (PC, erster PDF-Import) – nicht im Service-Worker-Precache; import() über Function, damit Babel es nicht umschreibt
+let _pdfjs=null;
+async function loadPdfJs(){if(_pdfjs)return _pdfjs;const u=new URL("./lib/pdf.min.mjs",location.href).href;
+  const m=await (new Function("u","return import(u)"))(u);m.GlobalWorkerOptions.workerSrc=new URL("./lib/pdf.worker.min.mjs",location.href).href;_pdfjs=m;return m;}
+const PDF_WASM=()=>new URL("./lib/pdfjs-wasm/",location.href).href;
+// Quelle (pdf.js-Seite oder Bild) gedreht (0/90/180/270) und zugeschnitten (normiert [x,y,w,h] im gedrehten Bild) auf eine Leinwand rendern; lange Kante ≤ max.
+// PDF: nur der Zuschnitt wird gerendert (Versatz im Viewport); intent "print" rendert auch in verdeckten Tabs (kein requestAnimationFrame).
+async function renderDocCanvas(src,rot,crop,max){const c=crop||[0,0,1,1];const cv=document.createElement("canvas");
+  if(src.page){const pg=src.page,r=((pg.rotate||0)+rot)%360,base=pg.getViewport({scale:1,rotation:r});const cw=c[2]*base.width,ch=c[3]*base.height,s=max/Math.max(cw,ch);
+    const vp=pg.getViewport({scale:s,rotation:r,offsetX:-c[0]*base.width*s,offsetY:-c[1]*base.height*s});
+    cv.width=Math.max(1,Math.round(cw*s));cv.height=Math.max(1,Math.round(ch*s));const g=cv.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,cv.width,cv.height);
+    await pg.render({canvasContext:g,viewport:vp,canvas:cv,intent:"print"}).promise;return cv;}
+  const img=src.img,W=img.naturalWidth||img.width,H=img.naturalHeight||img.height,sw=rot%180?H:W,sh=rot%180?W:H;const cw=c[2]*sw,ch=c[3]*sh,k=Math.min(1,max/Math.max(cw,ch));
+  cv.width=Math.max(1,Math.round(cw*k));cv.height=Math.max(1,Math.round(ch*k));const g=cv.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,cv.width,cv.height);
+  g.scale(k,k);g.translate(-c[0]*sw,-c[1]*sh);g.translate(sw/2,sh/2);g.rotate(rot*Math.PI/180);g.drawImage(img,-W/2,-H/2);return cv;}
+async function storeDocCanvas(cv){const blob=await toJpeg(cv,DOC_Q);const tblob=await toJpeg(scaledCanvas(cv,TH_MAX),TH_Q);const id=uid();
+  await phPut({id,blob,tblob,w:cv.width,h:cv.height});return {photoId:id,w:cv.width,h:cv.height,kb:Math.round(blob.size/1024)};}
+// Anzahl Verortungen auf einer Unterlage (Räume + Fenster)
+function docPosCount(p,docId){let n=0;(p.rooms||[]).forEach(r=>{if(posOn(r,docId))n++;(r.fenster||[]).forEach(f=>{if(posOn(f,docId))n++;});});return n;}
+
 // Minimaler ZIP-Writer (unkomprimiert): Fotos werden als Blob-Referenzen eingebunden statt in den Speicher kopiert
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
 function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
@@ -698,6 +735,94 @@ function TraktPick({value,onChange,list}){const[neu,setNeu]=useState(!!value&&!l
   return <div style={{marginBottom:8}}><label style={$.lbl}>Gebäudeteil / Trakt (optional)</label>
     {!neu?<select style={$.sel} value={list.includes(value)?value:""} onChange={e=>{if(e.target.value==="__new"){setNeu(true);onChange("");}else onChange(e.target.value);}}><option value="">— ohne —</option>{list.map(t=><option key={t} value={t}>{t}</option>)}<option value="__new">+ Neuer Gebäudeteil…</option></select>
     :<div style={{display:"flex",gap:6}}><input style={$.inp} autoFocus value={value||""} onChange={e=>onChange(e.target.value)} placeholder="z.B. Schulhaus, Turnhalle, Trakt A"/><button style={{...$.btn,...$.bO,...$.bS}} onClick={()=>{setNeu(false);onChange("");}}>✕</button></div>}</div>;}
+// Angaben zu einer Unterlage (Import und Bearbeiten): Art, Name, Gebäudeteil, Geschoss bzw. Fassade, Herkunft
+function DocMetaForm({meta,setMeta,tl}){const set=(k,v)=>setMeta({...meta,[k]:v});
+  return <div>
+    <div style={{marginBottom:8}}><label style={$.lbl}>Art</label><select style={$.sel} value={meta.art} onChange={e=>set("art",e.target.value)}>{Object.entries(DOC_ARTEN).map(([k,a])=><option key={k} value={k}>{a.label}{a.plan?" (Plan)":""}</option>)}</select></div>
+    <div style={{marginBottom:8}}><label style={$.lbl}>Name</label><input style={$.inp} value={meta.name||""} onChange={e=>set("name",e.target.value)} placeholder="leer = aus Art, Gebäudeteil, Geschoss/Fassade"/></div>
+    <TraktPick value={meta.trakt||""} list={tl} onChange={v=>set("trakt",v)}/>
+    <div style={{display:"flex",gap:8,marginBottom:8}}>
+      {meta.art!=="ansicht"&&<div style={{flex:1}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={meta.geschoss||""} onChange={e=>set("geschoss",e.target.value)}><option value="">—</option>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div>}
+      {meta.art==="ansicht"&&<div style={{flex:1}}><label style={$.lbl}>Fassade</label><select style={$.sel} value={meta.fassade||""} onChange={e=>set("fassade",e.target.value)}><option value="">—</option>{ORIENTATIONS.map(o=><option key={o}>{o}</option>)}</select></div>}
+      <div style={{flex:1}}><label style={$.lbl}>Herkunft</label><select style={$.sel} value={meta.herkunft||"bild"} onChange={e=>set("herkunft",e.target.value)}>{Object.entries(DOC_HERKUNFT).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></div>
+    </div>
+    {DOC_ARTEN[meta.art]&&DOC_ARTEN[meta.art].plan&&<div style={{fontSize:11,color:C.tx2}}>{meta.art==="grundriss"?"Grundriss: Räume und Fenster lassen sich als Punkte verorten.":"Ansicht: Fenster lassen sich als Rechtecke einzeichnen – auch auf einem Fassadenfoto oder einer Handskizze. Zählung von aussen gesehen links → rechts."}</div>}
+  </div>;}
+
+// Import einer Unterlage: PDF-Seite wählen → zuschneiden/drehen → Angaben → speichern. Bei mehrseitigen PDFs danach weitere Seiten möglich.
+function DocImport({file,herkunft,tl,onSave,onClose}){
+  const isPdf=/\.pdf$/i.test(file.name||"")||file.type==="application/pdf";
+  const g0=useRef(docGuess(file.name||""));
+  const[st,setSt]=useState("laden");const[err,setErr]=useState("");const[busy,setBusy]=useState("");
+  const src=useRef(null),pdf=useRef(null),task=useRef(null),box=useRef(null),drag=useRef(null);
+  const endPdf=()=>{try{if(task.current)task.current.destroy();}catch(_){}task.current=null;pdf.current=null;};   // pdf.js 6: Aufräumen über den Lade-Auftrag
+  const[nPages,setNPages]=useState(0);const[page,setPage]=useState(1);const[thumbs,setThumbs]=useState({});
+  const[rot,setRot]=useState(0);const[prev,setPrev]=useState(null);const[crop,setCrop]=useState(null);const[saved,setSaved]=useState([]);
+  const[meta,setMeta]=useState({name:g0.current.name,art:g0.current.art,trakt:"",geschoss:g0.current.geschoss,fassade:g0.current.fassade,herkunft:herkunft||(isPdf?"pdf":"bild")});
+  const fail=(m,e)=>{console.error(e);setErr(m);setBusy("");};
+  // Vorschau der aktuellen Quelle (gedreht) rendern
+  const preview=async(r)=>{setBusy("Vorschau wird gerechnet…");try{const cv=await renderDocCanvas(src.current,r,null,DOC_PREV);
+      const b=await toJpeg(cv,0.8);setPrev({url:URL.createObjectURL(b),w:cv.width,h:cv.height});setCrop(null);setSt("zuschnitt");setBusy("");}
+    catch(e){fail("Vorschau fehlgeschlagen: "+(e&&e.message||e),e);}};
+  const openPage=async n=>{setBusy(`Seite ${n} wird geladen…`);try{src.current={page:await pdf.current.getPage(n)};setPage(n);setRot(0);
+      if(nPages>1)setMeta(m=>({...m,name:g0.current.name+" – S. "+n}));await preview(0);}catch(e){fail("Seite konnte nicht geladen werden",e);}};
+  useEffect(()=>{let alive=true;(async()=>{try{
+      if(isPdf){setBusy("pdf.js wird geladen…");let m;try{m=await loadPdfJs();}catch(e){fail("PDF-Import benötigt beim ersten Mal Internet (pdf.js wird geladen). Alternativ die Seite als Bild (PNG/JPG) laden.",e);return;}
+        setBusy("PDF wird geöffnet…");const data=new Uint8Array(await file.arrayBuffer());
+        let d;try{task.current=m.getDocument({data,wasmUrl:PDF_WASM()});d=await task.current.promise;}catch(e){fail(e&&e.name==="PasswordException"?"Das PDF ist passwortgeschützt – bitte ungeschützt speichern oder als Bild exportieren.":"PDF konnte nicht gelesen werden: "+(e&&e.message||e),e);return;}
+        if(!alive){endPdf();return;}pdf.current=d;setNPages(d.numPages);
+        if(d.numPages===1){src.current={page:await d.getPage(1)};await preview(0);}
+        else{setSt("seiten");setBusy("");for(let i=1;i<=Math.min(d.numPages,60)&&alive;i++){try{const cv=await renderDocCanvas({page:await d.getPage(i)},0,null,180);const u=cv.toDataURL("image/jpeg",0.7);if(alive)setThumbs(t=>({...t,[i]:u}));}catch(e){}}}}
+      else{setBusy("Bild wird geladen…");src.current={img:await loadImg(file)};if(alive)await preview(0);}
+    }catch(e){fail("Datei konnte nicht gelesen werden: "+(e&&e.message||e),e);}})();
+    return()=>{alive=false;endPdf();};},[]);
+  useEffect(()=>()=>{if(prev)URL.revokeObjectURL(prev.url);},[prev]);
+  // Zuschnitt: Rechteck aufziehen (Maus/Finger), Koordinaten normiert auf die Vorschau
+  const pt=e=>{const r=box.current.getBoundingClientRect();return [Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)),Math.min(1,Math.max(0,(e.clientY-r.top)/r.height))];};
+  const down=e=>{e.preventDefault();try{e.currentTarget.setPointerCapture(e.pointerId);}catch(_){}drag.current=pt(e);setCrop([drag.current[0],drag.current[1],0,0]);};
+  const move=e=>{if(!drag.current)return;const[a,b]=drag.current,[x,y]=pt(e);setCrop([Math.min(a,x),Math.min(b,y),Math.abs(x-a),Math.abs(y-b)]);};
+  const up=()=>{drag.current=null;setCrop(c=>c&&c[2]>0.02&&c[3]>0.02?c:null);};
+  const save=async()=>{setBusy("Unterlage wird gerechnet (lange Kante "+DOC_MAX+" px)…");try{
+      const cv=await renderDocCanvas(src.current,rot,crop,DOC_MAX);const stored=await storeDocCanvas(cv);
+      const q={datei:file.name||"Foto"};if(isPdf)q.seite=page;if(crop)q.crop=crop.map(v=>Math.round(v*10000)/10000);if(rot)q.dreh=rot;
+      const doc={id:uid(),name:(meta.name||"").trim(),art:meta.art,herkunft:meta.herkunft,trakt:(meta.trakt||"").trim(),geschoss:meta.art==="ansicht"?"":meta.geschoss||"",fassade:meta.art==="ansicht"?meta.fassade||"":"",...stored,erstellt:new Date().toISOString(),quelle:q};
+      onSave(doc);setBusy("");if(isPdf&&nPages>1){setSaved(s=>[...s,page]);setSt("seiten");}else onClose();}
+    catch(e){fail("Speichern fehlgeschlagen (Speicher voll?): "+(e&&e.message||e),e);}};
+  const hb={...$.btn,...$.bO,...$.bS};
+  return ReactDOM.createPortal(<div style={{position:"fixed",inset:0,background:C.bg,zIndex:450,display:"flex",flexDirection:"column",color:C.tx}}>
+    <div style={$.hdr}><button style={$.hdrB} onClick={onClose}>✕</button><div style={$.hdrT}>{st==="seiten"?"Seite wählen":st==="angaben"?"Angaben":"Zuschneiden"} · {file.name||"Foto"}</div>
+      {st==="zuschnitt"&&!busy&&<button style={$.hdrB} onClick={()=>setSt("angaben")}>Weiter →</button>}
+      {st==="angaben"&&!busy&&<button style={$.hdrB} onClick={save}>✓ Speichern</button>}</div>
+    <div style={{flex:1,overflow:"auto",padding:12,maxWidth:1040,width:"100%",margin:"0 auto"}}>
+      {err&&<div style={{...$.card,borderColor:C.err,color:C.err}}>{err}</div>}
+      {busy&&<div style={{...$.card,color:C.warn}}>⏳ {busy}</div>}
+      {st==="seiten"&&<div>
+        <div style={{fontSize:12,color:C.tx2,marginBottom:8}}>{nPages} Seiten – Seite antippen, zuschneiden, speichern. {saved.length>0&&<b style={{color:C.ok}}>Übernommen: S. {saved.join(", ")}. </b>}{nPages>60&&"Vorschau nur für die ersten 60 Seiten."}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:8}}>{Array.from({length:nPages},(_,i)=>i+1).map(n=><div key={n} onClick={()=>!busy&&openPage(n)} style={{cursor:"pointer",border:`2px solid ${saved.includes(n)?C.ok:C.bd}`,borderRadius:8,padding:4,background:C.sf,textAlign:"center"}}>
+          <div style={{height:120,display:"flex",alignItems:"center",justifyContent:"center",background:"#fff",borderRadius:4}}>{thumbs[n]?<img src={thumbs[n]} alt="" style={{maxWidth:"100%",maxHeight:120}}/>:<span style={{color:"#999",fontSize:11}}>…</span>}</div>
+          <div style={{fontSize:11,marginTop:3}}>S. {n}{saved.includes(n)?" ✓":""}</div></div>)}</div>
+        {saved.length>0&&<button style={{...$.btn,...$.bP,...$.bBl,marginTop:12}} onClick={onClose}>Fertig</button>}
+      </div>}
+      {st==="zuschnitt"&&prev&&<div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8,alignItems:"center"}}>
+          <button style={hb} onClick={()=>{const r=(rot+90)%360;setRot(r);preview(r);}} disabled={!!busy}>↻ 90°</button>
+          <button style={hb} onClick={()=>setCrop(null)}>Ganze Seite</button>
+          {isPdf&&nPages>1&&<button style={hb} onClick={()=>setSt("seiten")}>Andere Seite</button>}
+          <span style={{fontSize:11,color:C.tx2,flex:"1 1 200px"}}>Rechteck aufziehen = nur diesen Bereich übernehmen (empfohlen bei großen Plänen – Schrift bleibt lesbar).</span>
+        </div>
+        <div style={{textAlign:"center"}}><div ref={box} style={{position:"relative",display:"inline-block",lineHeight:0,touchAction:"none",cursor:"crosshair",overflow:"hidden",userSelect:"none"}} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
+          <img src={prev.url} alt="" draggable={false} style={{display:"block",maxWidth:"100%",maxHeight:"70vh",background:"#fff"}}/>
+          {crop&&<div style={{position:"absolute",left:crop[0]*100+"%",top:crop[1]*100+"%",width:crop[2]*100+"%",height:crop[3]*100+"%",border:`2px solid ${C.ac}`,boxShadow:"0 0 0 9999px rgba(0,0,0,0.45)",pointerEvents:"none"}}/>}
+        </div></div>
+        <div style={{fontSize:11,color:C.tx3,marginTop:6,textAlign:"center"}}>{crop?`Zuschnitt ${Math.round(crop[2]*100)} × ${Math.round(crop[3]*100)} % der Seite`:"Ganze Seite"}{rot?` · gedreht ${rot}°`:""}</div>
+      </div>}
+      {st==="angaben"&&<div style={{maxWidth:520,margin:"0 auto"}}>
+        {prev&&<div style={{textAlign:"center",marginBottom:10}}><div style={{position:"relative",display:"inline-block",lineHeight:0,overflow:"hidden",borderRadius:6}}><img src={prev.url} alt="" style={{display:"block",maxWidth:"100%",maxHeight:200,background:"#fff"}}/>{crop&&<div style={{position:"absolute",left:crop[0]*100+"%",top:crop[1]*100+"%",width:crop[2]*100+"%",height:crop[3]*100+"%",border:`2px solid ${C.ac}`,boxShadow:"0 0 0 9999px rgba(0,0,0,0.45)"}}/>}</div></div>}
+        <DocMetaForm meta={meta} setMeta={setMeta} tl={tl}/>
+        <div style={{display:"flex",gap:8,marginTop:12}}><button style={{...$.btn,...$.bO,flex:1}} onClick={()=>setSt("zuschnitt")} disabled={!!busy}>← Zuschnitt</button><button style={{...$.btn,...$.bP,flex:2}} onClick={save} disabled={!!busy}>✓ Speichern</button></div>
+      </div>}
+    </div></div>,document.body);
+}
 // Fängt Darstellungsfehler ab (statt leerer Seite) – die Daten liegen bereits in IndexedDB
 class ErrorBoundary extends React.Component{
   constructor(p){super(p);this.state={err:null};}
@@ -877,6 +1002,10 @@ function App(){
   const[aufIn,setAufIn]=useState(null);    // Gasmessung: Aufbau vom Gerät (null = Vorschlag unverändert)
   const[szrSel,setSzrSel]=useState(1);      // Gasmessung 3-fach: gewählter SZR
   const[lastAuf,setLastAuf]=useState(null); // zuletzt gemessener Aufbau {aufbau,von} – Vorschlag für gleiche Verglasungen
+  const[docsFrom,setDocsFrom]=useState("survey"); // Rücksprung aus «Pläne & Unterlagen»
+  const[impQueue,setImpQueue]=useState([]);      // Dateien, die nacheinander importiert werden {id,file,herkunft}
+  const[editDoc,setEditDoc]=useState(null);const[viewDoc,setViewDoc]=useState(null);
+  const docFileRef=useRef(),docCamRef=useRef();
   const[bootMsg,setBootMsg]=useState(""); // Fortschritt beim Start (Foto-Migration)
   const[bootErr,setBootErr]=useState(null);
   const[busyMsg,setBusyMsg]=useState(""); // länger laufende Aktionen (ZIP, Import)
@@ -933,6 +1062,13 @@ function App(){
   const moveTrakt=(t,d)=>trUpd(p=>{const l=traktList(p);const i=l.indexOf(t),j=i+d;if(i<0||j<0||j>=l.length)return;[l[i],l[j]]=[l[j],l[i]];p.trakte=l;});
   const setRoomProps=(rId,vals)=>mut(p=>{const r=gR(p,rId);if(!r)return;Object.assign(r,vals);p.trakte=traktList(p);});
   const renFen=(rId,fId,nr)=>{const n=(nr||"").trim();if(!n)return;mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.nr=n;});};
+  // Unterlagen: hinzufügen, Angaben ändern, entfernen (Bild und Verortungen)
+  const addDoc=d=>{mut(p=>{p.docs=[...(p.docs||[]),d];p.trakte=traktList(p);});flash("Unterlage gespeichert");};
+  const updDoc=(id,vals)=>mut(p=>{const d=(p.docs||[]).find(x=>x.id===id);if(d)Object.assign(d,vals);p.trakte=traktList(p);});
+  const delDoc=d=>{const n=docPosCount(projRef.current,d.id);if(!confirm(`«${docTitle(d)}» entfernen?`+(n?` ${n} Verortung(en) darauf werden ebenfalls entfernt.`:"")))return;
+    let bid=null;mut(p=>{bid=delDocIn(p,d.id);});if(bid)phDel([bid]);flash("Unterlage entfernt");};
+  const queueDocs=(files,herkunft)=>setImpQueue(q=>[...q,...files.map(file=>({id:uid(),file,herkunft}))]);
+  const openDocs=from=>{setDocsFrom(from);setView("docs");};
 
   // Import von ZIP (Daten + Fotos) oder JSON (auch alte Backups mit eingebetteten Fotos)
   const impFile=async(file,merge)=>{if(!file)return;setBusyMsg("Import läuft…");try{const d=await readProjectFile(file);
@@ -1145,6 +1281,33 @@ function App(){
   </div>{Toast}</div>;
 
   // SETUP
+  if(view==="docs"){const p=proj;if(!p){setView("home");return null;}const ds=sortedDocs(p),tl=traktList(p);const plans=ds.filter(isPlanDoc),other=ds.filter(d=>!isPlanDoc(d));
+    const openDoc=d=>{if(d.photoId)setViewDoc(d);};
+    const row=d=>{const n=docPosCount(p,d.id);return <div key={d.id} style={{...$.li,cursor:"default",gap:10}}>
+      <div style={{width:64,height:64,flexShrink:0,cursor:d.photoId?"pointer":"default"}} onClick={()=>openDoc(d)}>{d.photoId?<Thumb ph={{id:d.photoId}}/>:<div style={{...$.phT,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:C.tx3,background:C.sf2,textAlign:"center"}}>Bild fehlt</div>}</div>
+      <div style={{flex:1,minWidth:0,cursor:d.photoId?"pointer":"default"}} onClick={()=>openDoc(d)}>
+        <div style={{fontWeight:700,fontSize:14,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{docTitle(d)}</div>
+        <div style={{fontSize:11,color:C.tx2}}>{(DOC_ARTEN[d.art]||{}).label||d.art}{DOC_HERKUNFT[d.herkunft]?" · "+DOC_HERKUNFT[d.herkunft]:""}{d.w?` · ${d.w}×${d.h} px`:""}{d.kb?` · ${d.kb} KB`:""}</div>
+        {isPlanDoc(d)&&<div style={{fontSize:11,color:n?C.ok:C.tx3}}>{n?`${n} verortet`:"noch nichts verortet"}</div>}</div>
+      <button style={{...$.btn,...$.bO,...$.bS,padding:"5px 9px"}} title="Angaben bearbeiten" onClick={()=>setEditDoc({...d})}>✎</button>
+      <button style={{...$.btn,...$.bO,...$.bS,padding:"5px 9px",color:C.err}} title="Entfernen" onClick={()=>delDoc(d)}>🗑</button></div>;};
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(docsFrom||"survey")}>← Zurück</button><div style={$.hdrT}>Pläne & Unterlagen</div></div><div className="body" style={$.body}>
+    <div style={$.card}><div style={$.cardT}>Hinzufügen</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>docFileRef.current?.click()}>📄 PDF oder Bild</button><button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>docCamRef.current?.click()}>📷 Foto / Skizze</button></div>
+      <input ref={docFileRef} type="file" accept="application/pdf,.pdf,image/*" multiple style={{display:"none"}} onChange={e=>{const fs=[...(e.target.files||[])];e.target.value="";queueDocs(fs);}}/>
+      <input ref={docCamRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{const fs=[...(e.target.files||[])];e.target.value="";queueDocs(fs,"foto");}}/>
+      <div style={{fontSize:11,color:C.tx2,marginTop:8}}>Grundrisse, Ansichten, Fassadenfotos, Handskizzen, Detailschnitte, Datenblätter, Energienachweise – als Bild im Projekt, offline verfügbar. PDF-Import am PC (beim ersten Mal mit Internet). Große Pläne beim Import zuschneiden, damit die Schrift lesbar bleibt.</div></div>
+    {ds.length===0?<div style={$.empty}><div style={{fontSize:32,marginBottom:6}}>🗺</div><div style={{fontWeight:700}}>Noch keine Unterlagen</div><div style={{fontSize:12,marginTop:6}}>Ohne Pläne: Fassadenfoto oder Handskizze aufnehmen und als Ansicht bzw. Grundriss verwenden.</div></div>
+    :<>{plans.length>0&&<div><div style={{...$.cardT,margin:"4px 2px 6px"}}>Pläne ({plans.length})</div>{plans.map(row)}</div>}
+      {other.length>0&&<div><div style={{...$.cardT,margin:"10px 2px 6px"}}>Weitere Unterlagen ({other.length})</div>{other.map(row)}</div>}</>}
+  </div>
+    {impQueue.length>0&&<DocImport key={impQueue[0].id} file={impQueue[0].file} herkunft={impQueue[0].herkunft} tl={tl} onSave={addDoc} onClose={()=>setImpQueue(q=>q.slice(1))}/>}
+    {editDoc&&<div style={$.modal} onClick={()=>setEditDoc(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:12}}>Unterlage bearbeiten</div>
+      <DocMetaForm meta={editDoc} setMeta={setEditDoc} tl={tl}/>
+      <button style={{...$.btn,...$.bP,...$.bBl,marginTop:12}} onClick={()=>{const e=editDoc;updDoc(e.id,{name:(e.name||"").trim(),art:e.art,herkunft:e.herkunft,trakt:(e.trakt||"").trim(),geschoss:e.art==="ansicht"?"":e.geschoss||"",fassade:e.art==="ansicht"?e.fassade||"":""});setEditDoc(null);flash("Gespeichert");}}>Speichern</button></div></div>}
+    {viewDoc&&<PhotoViewer photos={[{id:viewDoc.photoId,w:viewDoc.w,h:viewDoc.h,zeit:viewDoc.erstellt}]} start={0} title={docTitle(viewDoc)} onClose={()=>setViewDoc(null)}/>}
+  {Toast}</div>;}
+
   if(view==="setup"){const p=proj;const af=new Set(p.activeFields||[]);const defs=p.defaults||{};
     const togF=k=>{const n=new Set(af);if(n.has(k))n.delete(k);else n.add(k);setProj({...p,activeFields:[...n]});};
     const setDef=(k,v)=>{const nd={...defs,[k]:v};setProj({...p,defaults:nd});};
@@ -1186,6 +1349,10 @@ function App(){
         <button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px",color:C.err}} onClick={()=>delTrakt(t)}>🗑</button></div>;})}
       <div style={{display:"flex",gap:6,marginTop:8}}><input style={{...$.inp,...$.inpS}} value={newTrakt} onChange={e=>setNewTrakt(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){addTrakt(newTrakt);setNewTrakt("");}}} placeholder="Neuer Gebäudeteil"/><button style={{...$.btn,...$.bP,...$.bS}} onClick={()=>{addTrakt(newTrakt);setNewTrakt("");}}>+</button></div>
     </div>
+    <div style={$.card}><div style={$.cardT}>Pläne & Unterlagen</div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Grundrisse und Ansichten (auch Fassadenfoto oder Handskizze) für Orientierung und Verortung; Detailschnitte, Datenblätter, Energienachweise zum Nachschlagen. Import am PC mit Zuschnitt.</div>
+      {(p.docs||[]).length>0&&<div style={{fontSize:12,color:C.tx,marginBottom:8}}>{Object.entries(DOC_ARTEN).map(([k,a])=>{const n=(p.docs||[]).filter(d=>d.art===k).length;return n?`${a.label}: ${n}`:null;}).filter(Boolean).join(" · ")}</div>}
+      <button style={{...$.btn,...$.bO,...$.bS,...$.bBl}} onClick={()=>openDocs("setup")}>🗺 Pläne & Unterlagen ({(p.docs||[]).length})</button></div>
     <div style={$.card}><div style={$.cardT}>Optionen</div><Tog label="Datenquelle erfassen (M/H/P)" value={!!p.showSrc} onChange={v=>setProj({...p,showSrc:v})}/><div style={{fontSize:11,color:C.tx2,marginTop:2}}>Blendet die Quelle-Auswahl (Messwert/Hersteller/Planung) je Wert ein.</div></div>
     <div style={$.card}><div style={$.cardT}>Modus</div>{hasData(p)&&<div style={{fontSize:11,color:C.warn,marginBottom:6}}>⚠ Modus kann nicht geändert werden, da bereits Messdaten vorhanden sind.</div>}<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Standard: „Fenster + Verglasung" (mit Geometrie & Rahmen). „Nur Verglasungen" nur für reine Glaserfassung ohne Fensterdaten.</div><div style={{display:"flex",gap:8}}>{[["fenster","⊞","Fenster + Verglasung"],["verglasung","◻","Nur Verglasungen"]].map(([m,i,t])=><div key={m} onClick={()=>trySetModus(m)} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center",opacity:hasData(p)&&p.modus!==m?0.4:1}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Zustand Rahmen</div><div style={{display:"flex",gap:4}}>{["Keine","Einfach","Freitext","Detailliert"].map(z=><div key={z} onClick={()=>setProj({...p,zustandModus:z})} style={{flex:1,padding:"7px 2px",borderRadius:6,border:`1px solid ${(p.zustandModus||"Keine")===z?C.ac:C.bd}`,background:(p.zustandModus||"Keine")===z?C.acBg:"transparent",cursor:"pointer",textAlign:"center",fontSize:11,fontWeight:600}}>{z}</div>)}</div></div>
@@ -1255,7 +1422,7 @@ function App(){
         </div>
         {!isCol&&byF[fl].map(roomLi)}</div>;});};
     const tGroups=useT?[...tl,""].map(t=>({t,rooms:(p.rooms||[]).filter(r=>(r.trakt||"")===t)})).filter(g=>g.t||g.rooms.length):[];
-  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div className="body" style={$.body}>
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} title="Pläne & Unterlagen" onClick={()=>openDocs("survey")}>🗺{(p.docs||[]).length?" "+p.docs.length:""}</button><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{s.rooms}</div><div style={$.statL}>Räume</div></div><div style={$.stat}><div style={$.statV}>{s.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{s.m}</div><div style={$.statL}>Mess.</div></div><div style={$.stat}><div style={$.statV}>{s.ph}</div><div style={$.statL}>Fotos</div></div></div>
     {profOf(p)&&<div onClick={()=>setView("setup")} style={{fontSize:12,color:C.tx2,margin:"-2px 2px 10px",cursor:"pointer"}}>Profil: <b style={{color:profMess(p)?C.ac:C.tx}}>{profOf(p).name}</b>{profCustom(p)?" (angepasst)":""}{profMess(p)?" · Fortschritt = gemessen":""} <span style={{color:C.ac}}>· ändern</span></div>}
     <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
