@@ -70,7 +70,7 @@ const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
 const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
 const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
 const ROW_ROLES=["Hauptfenster","Oberlicht","Brüstung","Seitenteil","Zwischenfeld"];
-const APP_VERSION="v19 · September 2026";
+const APP_VERSION="v20 · September 2026";
 const APP_REPO="https://github.com/ReSolRe/FensterCheck";
 
 // Editierbare thermische Standardwerte (global + Projekt-Override)
@@ -1354,6 +1354,7 @@ function App(){
       <ol style={{margin:0,paddingLeft:18,fontSize:13,lineHeight:1.55}}>
         <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und <b>Erfassungsprofil</b> wählen: Kurzaufnahme, Aufnahme, Detailaufnahme – oder für Messbegehungen Gasfüllgrad, Taupunkt, Ug-Messung. Messprofile zeigen nur ihre Messart, eine kompakte Raumliste und den Fortschritt «gemessen»; «Speichern &amp; weiter» springt zur nächsten offenen Verglasung, «nicht messbar» hält den Grund fest. Das Profil lässt sich vor jeder Begehung umschalten, Daten bleiben erhalten. <b>Gasfüllgrad:</b> Gerät wählen (Sparklike Laser Portable oder Handheld); beim Portable wird der gemessene Aufbau mitgespeichert und als Scheibenaufbau übernommen – vorgeschlagen wird der Wert der Verglasung bzw. der zuletzt gemessene; bei 3-fach-Glas je SZR ein Wert.</li>
         <li>Optional <b>Gebäudeteile/Trakte</b> in der Einrichtung anlegen. <b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren, mit <b>✎</b> umbenennen.</li>
+        <li><b>Pläne &amp; Unterlagen</b> (🗺 in der Raumliste): Grundrisse, Ansichten, Fassadenfotos, Handskizzen, Detailschnitte, Datenblätter, Energienachweise importieren – PDF am PC (Seite wählen, <b>zuschneiden</b>, drehen), Bilder und Fotos auch am Handy. Im Plan mit <b>✎ Verorten</b> Räume (Punkt) und Fenster (Punkt im Grundriss, Rechteck in der Ansicht) setzen; die Auswahl springt dabei zum nächsten Eintrag. Danach Marker antippen → Raum bzw. Messung; die Farben zeigen den Fortschritt des Profils. „🗺" an Raum, Fenster und Messung zeigt die Stelle im Plan.</li>
         <li><b>Fenster</b> hinzufügen (gleichartige mit <b>⧉</b> duplizieren) und von oben nach unten erfassen: Übersichtsfoto, Lage & Aufbau (Fassade, Bauart, <b>Geometrie</b>: Vorlage wählen, Felder antippen → Öffnungsart, Bandseite, Verglasung; senkrecht/waagrecht teilen, Oberlicht/Brüstung ergänzen), Rahmen, Funktion & Zustand, Kennwerte, Bemerkungen.</li>
         <li><b>Verglasung</b> öffnen → Glasstempel (Foto + Text), Aufbau, Fotos, optional <b>Messungen</b> (Gasfüllgrad, Ug gemessen, Taupunkt – beliebig viele Werte; je Wert ein 📷 z.B. für das Display des Messgeräts), Kennwerte (Ug/g/ψ mit Standardwerten), Bemerkungen. <b>Fotos</b>: 📷 Kamera / 🖼️ Galerie; antippen zum Vergrößern.</li>
         <li><b>Thermische Standardwerte</b> global oder pro Projekt unter <b>⚙ Einstellungen</b> anpassen.</li>
@@ -1367,8 +1368,8 @@ function App(){
       <div style={{fontSize:13,lineHeight:1.55}}>
         <b>Android (Chrome):</b> Menü ⋮ → „App installieren" bzw. „Zum Startbildschirm hinzufügen".<br/>
         <b>iPhone/iPad (Safari, nicht Chrome):</b> Teilen ⬆ → „Zum Home-Bildschirm" → „Hinzufügen".<br/>
-        <b>Offline:</b> Nach dem ersten Aufruf mit Internet läuft die App vollständig offline (Erfassen, Fotos, Export). Updates werden beim Öffnen im Hintergrund geladen und sind beim nächsten Öffnen aktiv.<br/>
-        <b>Mehrere Geräte:</b> ZIP-Sicherung (oder „Nur Daten (JSON)") per AirDrop/E-Mail teilen und auf dem anderen Gerät unter Einrichtung → „Räume zusammenführen" importieren.<br/>
+        <b>Offline:</b> Nach dem ersten Aufruf mit Internet läuft die App vollständig offline (Erfassen, Fotos, Pläne, Export). Nur der PDF-Import lädt beim ersten Mal pdf.js aus dem Netz (am PC). Updates werden beim Öffnen im Hintergrund geladen und sind beim nächsten Öffnen aktiv.<br/>
+        <b>Mehrere Geräte:</b> ZIP-Sicherung (oder „Nur Daten (JSON)") per AirDrop/E-Mail teilen und auf dem anderen Gerät unter Einrichtung → „Räume zusammenführen" importieren. Pläne und Unterlagen reisen in der ZIP mit (Ordner „unterlagen"). Immer nur auf <b>einem</b> Gerät gleichzeitig bearbeiten – beim Zusammenführen werden nur neue Räume und Unterlagen ergänzt.<br/>
         <b>Fehlerbehebung:</b> Daten verschwunden → Browserdaten wurden gelöscht, Sicherung importieren. Fotos werden nicht gespeichert → Kamerazugriff im Browser erlauben. Excel-Export geht nicht → einmal mit Internet öffnen oder CSV verwenden.
       </div>
     </div>
@@ -1376,7 +1377,7 @@ function App(){
       <div style={{fontSize:13,lineHeight:1.5}}>Fachhochschule Nordwestschweiz (FHNW)<br/>Institut für Energie am Bau (INEB)<br/>Kontakt: <a href="mailto:gregor.steinke@fhnw.ch" style={{color:C.ac}}>gregor.steinke@fhnw.ch</a></div>
     </div>
     <div style={$.card}><div style={$.cardT}>Lizenz</div>
-      <div style={{fontSize:13,lineHeight:1.5}}>© 2026 FHNW – Institut für Energie am Bau (INEB). Internes Werkzeug, alle Rechte vorbehalten. Nutzung und Weitergabe nur mit Zustimmung des INEB.</div>
+      <div style={{fontSize:13,lineHeight:1.5}}>© 2026 FHNW – Institut für Energie am Bau (INEB). Internes Werkzeug, alle Rechte vorbehalten. Nutzung und Weitergabe nur mit Zustimmung des INEB.<div style={{fontSize:11,color:C.tx2,marginTop:6}}>Verwendete Bibliotheken: React, Babel (MIT), SheetJS (Apache-2.0), pdf.js (Apache-2.0, Mozilla; nur für den PDF-Import) mit OpenJPEG (BSD-2) und JBIG2-Dekoder (Apache-2.0) – Lizenztexte im Ordner lib.</div></div>
     </div>
     <div style={$.card}><div style={$.cardT}>Quellcode</div>
       <div style={{fontSize:13,lineHeight:1.5}}><a href={APP_REPO} target="_blank" rel="noopener noreferrer" style={{color:C.ac}}>github.com/ReSolRe/FensterCheck</a><div style={{fontSize:11,color:C.tx2,marginTop:6}}>Erstellt mit Unterstützung von Claude (Anthropic).</div></div>
