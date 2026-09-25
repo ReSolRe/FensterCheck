@@ -70,7 +70,7 @@ const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
 const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
 const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
 const ROW_ROLES=["Hauptfenster","Oberlicht","Brüstung","Seitenteil","Zwischenfeld"];
-const APP_VERSION="v18 · September 2026";
+const APP_VERSION="v19 · September 2026";
 const APP_REPO="https://github.com/ReSolRe/FensterCheck";
 
 // Editierbare thermische Standardwerte (global + Projekt-Override)
@@ -262,11 +262,28 @@ const SECTIONS=[
 ];
 const secFields=id=>Object.entries(FIELDS).filter(([,d])=>d.sec===id);
 
-const PRESETS={
-  schnell:{name:"Schnell",desc:"Nur Verglasungstyp + Fotos",fields:["verglasungsTyp"]},
-  standard:{name:"Standard",desc:"Rahmen, Beschläge, Dichtungen",fields:["fassade","fensterBauart","geometrie","rahmenMaterial","baujahr","dichtungAnzahl","dichtungZustand","beschlagZustand","verglasungsTyp","lowE","randverbundTyp","randverbundZustand","scheibenaufbau","glasDichtung","glasDichtungAussen","psiWert"]},
-  voll:{name:"Voll",desc:"Alle Felder",fields:Object.keys(FIELDS)},
+// Erfassungsprofile = Voreinstellung für eine Begehung. Beim Wählen setzt ein Profil die aktiven Felder, den Modus
+// «Zustand Rahmen» und die Datenquelle (M/H/P) – danach frei anpassbar, vorhandene Daten bleiben unberührt.
+// Messprofile (ms) wirken zusätzlich laufend: nur ihre Messart, Messkarte offen und oben, kompakte Raumansicht, Fortschritt «gemessen».
+const PROFILES={
+  kurz:{name:"Kurzaufnahme",grp:"Aufnahme",desc:"Zustand + Fotos",zustand:"Einfach",src:false,
+    fields:["fassade","fensterBauart","rahmenMaterial","baujahr","zustandRahmen","stempel","verglasungsTyp"]},
+  aufnahme:{name:"Aufnahme",grp:"Aufnahme",desc:"Rahmen, Glas, Zustand",zustand:"Detailliert",src:false,
+    fields:["fassade","fensterBauart","geometrie","fensterBreite","fensterHoehe","rahmenMaterial","baujahr","beschlagZustand","dichtungAnzahl","dichtungZustand","zustandRahmen","stempel","verglasungsTyp","scheibenaufbau","lowE","gasart","randverbundTyp","randverbundZustand","glasDichtung","glasDichtungAussen","glasBaujahr"]},
+  detail:{name:"Detailaufnahme",grp:"Aufnahme",desc:"alle Felder, für Uw",zustand:"Detailliert",src:true,fields:Object.keys(FIELDS)},
+  gas:{name:"Gasfüllgrad",grp:"Messung",desc:"nur Gasmessung",zustand:"Keine",src:true,ms:["gas"],
+    fields:["geometrie","stempel","verglasungsTyp","scheibenaufbau","lowE","gasart","glasBaujahr"]},
+  tp:{name:"Taupunkt",grp:"Messung",desc:"Taupunkt im SZR",zustand:"Keine",src:true,ms:["tp"],
+    fields:["geometrie","stempel","verglasungsTyp","scheibenaufbau","gasart","randverbundTyp","randverbundZustand","glasBaujahr"]},
+  ug:{name:"Ug-Messung",grp:"Messung",desc:"Ug in situ",zustand:"Keine",src:true,ms:["ug"],
+    fields:["fassade","geometrie","stempel","verglasungsTyp","scheibenaufbau","lowE","gasart","glasBreite","glasHoehe","glasBaujahr","ugWert"]},
 };
+const profOf=p=>(p&&PROFILES[p.profil])||null;
+// Profil anwenden (neues Objekt): Felder, Zustand Rahmen, Datenquelle – Daten bleiben unberührt
+function applyProfile(p,key){const pr=PROFILES[key];if(!pr)return p;return {...p,profil:key,activeFields:[...pr.fields],zustandModus:pr.zustand,showSrc:!!pr.src};}
+// Auswahl weicht vom gewählten Profil ab → «angepasst»
+function profCustom(p){const pr=profOf(p);if(!pr)return false;const a=new Set(p.activeFields||[]);
+  return pr.fields.length!==a.size||pr.fields.some(k=>!a.has(k))||(p.zustandModus||"Keine")!==pr.zustand||!!p.showSrc!==!!pr.src;}
 
 // IndexedDB – eine gemeinsame Verbindung; Stores: projects (Projektdaten) + photos (Bild-Blobs).
 // Fotos liegen bewusst NICHT im Projektobjekt: jede Änderung klont das ganze Projekt.
@@ -386,17 +403,35 @@ const fmtMs=m=>m?`${m.wert} ${MS_TYPES[msTyp(m)].unit}`:"";
 const msLabel=m=>m?`${MS_TYPES[msTyp(m)].label} ${m.wert} ${MS_TYPES[msTyp(m)].unit}`:"";   // „Gasfüllgrad 92 %" – Titel im Betrachter und Export
 const msPhotos=(v,mId)=>mId?((v&&v.photos)||[]).filter(p=>p.msId===mId):[];             // Messfotos eines Messwerts
 const msOrphans=v=>{const ids=new Set(((v&&v.messungen)||[]).map(m=>m.id));return ((v&&v.photos)||[]).filter(p=>p.ms&&!ids.has(p.msId));}; // Messfotos ohne passenden Messwert
+// Messprofil: Messarten des Profils (sonst alle), Status «nicht messbar» je Messart (v.msSkip[typ]={grund,zeit})
+const profMs=p=>{const pr=profOf(p);return pr&&pr.ms?pr.ms:MS_KEYS;};
+const profMess=p=>!!(profOf(p)&&profOf(p).ms);
+const NM_GRUENDE=["nicht zugänglich","kein Isolierglas","Gerät misst nicht","Sonstiges"];
+const msSkipOf=(v,t)=>(v&&v.msSkip&&v.msSkip[t])||null;
+const vgGemessen=(p,v)=>profMs(p).some(t=>msOf(v,t).length>0||!!msSkipOf(v,t));
+// «Speichern & weiter»: nächster nicht erledigter Eintrag nach Index i (mit Umlauf), sonst -1
+function nextOpen(list,i,done){for(let k=1;k<list.length;k++){const j=(i+k)%list.length;if(!done(list[j]))return j;}return -1;}
 function msStats(list){const w=list.map(m=>m.wert).filter(x=>typeof x==="number"&&!isNaN(x));if(!w.length)return null;const s=[...w].sort((a,b)=>a-b);const r=x=>Math.round(x*100)/100;
   return {n:w.length,avg:r(w.reduce((a,b)=>a+b,0)/w.length),min:s[0],max:s[s.length-1],med:r(s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2)};}
 // Eine Verglasung gilt als "erfasst", wenn an ihr vor Ort gearbeitet wurde – Messung, Foto oder Daten an der Verglasung,
 // Foto oder Rahmenzustand am Fenster. Die Fenster-Daten zählen bewusst NICHT: sie sind oft aus Plänen vorbelegt (Fassade,
 // Bauart, Maße) und würden sonst alle Verglasungen des Fensters von Anfang an als erledigt zeigen.
 const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||!!f?.zustandRahmen;
+// Fortschritt: im Messprofil «gemessen» (Wert oder «nicht messbar» für die Messart des Profils), sonst «dokumentiert»
+const vgDone=(p,f,v)=>profMess(p)?vgGemessen(p,v):vgErf(f,v);
+// Export-Spalten: aktive Felder plus alle Felder mit Daten oder Standardwert – ein Profilwechsel nimmt keine Werte aus dem Export
+function exportFieldSet(p){const s=new Set(p.activeFields||[]);const has=x=>x&&(""+x).trim();
+  Object.entries(p.defaults||{}).forEach(([k,x])=>{if(has(x)&&FIELDS[k])s.add(k);});
+  (p.rooms||[]).forEach(r=>(r.fenster||[]).forEach(f=>{Object.entries(f.data||{}).forEach(([k,x])=>{if(has(x)&&FIELDS[k])s.add(k);});
+    if(f.geometrie&&geoHasContent(f.geometrie))s.add("geometrie");if(masseSummary(f.rahmenmasse))s.add("rahmenmasse");
+    (f.verglasungen||[]).forEach(v=>Object.entries(v.data||{}).forEach(([k,x])=>{if(has(x)&&FIELDS[k])s.add(k);}));}));
+  return s;}
+const skipText=v=>MS_KEYS.filter(t=>msSkipOf(v,t)).map(t=>`${MS_TYPES[t].label}: ${msSkipOf(v,t).grund}`).join("; ");
 function parseCSV(text){const ls=text.trim().split(/\r?\n/);if(ls.length<2)return[];const h=ls[0].split(/[;,\t]/).map(x=>x.trim().toLowerCase());return ls.slice(1).map(l=>{const v=l.split(/[;,\t]/).map(x=>x.trim());const o={};h.forEach((x,i)=>{o[x]=v[i]||"";});return o;}).filter(r=>Object.values(r).some(v=>v));}
 
 // Export
 function buildExport(p){
-  const af=new Set(p.activeFields||[]);
+  const af=exportFieldSet(p);
   const ff=Object.entries(FIELDS).filter(([k,d])=>d.g==="f"&&d.t!=="zustand"&&d.t!=="geo"&&d.t!=="masse"&&af.has(k));
   const vf=Object.entries(FIELDS).filter(([k,d])=>d.g==="v"&&af.has(k));
   const geoOn=af.has("geometrie"),masseOn=af.has("rahmenmasse");
@@ -407,7 +442,7 @@ function buildExport(p){
     ["Feuchte aussen [%rF]",p.feuchteAussen||""],["Feuchte innen [%rF]",p.feuchteInnen||""],
     ["Erstellt",p.erstellt?new Date(p.erstellt).toLocaleDateString("de-CH"):""],
     ["Geändert",p.geaendert?new Date(p.geaendert).toLocaleString("de-CH"):""],
-    ["Modus",p.modus==="fenster"?"Fenster+Verglasungen":"Nur Verglasungen"],...(traktList(p).length?[["Gebäudeteile",traktList(p).join(", ")]]:[]),[]);
+    ["Modus",p.modus==="fenster"?"Fenster+Verglasungen":"Nur Verglasungen"],["Erfassungsprofil",profOf(p)?profOf(p).name+(profCustom(p)?" (angepasst)":""):"–"],...(traktList(p).length?[["Gebäudeteile",traktList(p).join(", ")]]:[]),[]);
   const rooms=sortedRooms(p);
   let tR=0,tF=0,tV=0,tP=0;const tM={};MS_KEYS.forEach(t=>tM[t]=0);
   (p.rooms||[]).forEach(r=>{tR++;tP+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{tF++;tP+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{tV++;(v.messungen||[]).forEach(m=>{tM[msTyp(m)]++;});tP+=(v.photos||[]).length;});});});
@@ -417,7 +452,7 @@ function buildExport(p){
   if(p.defaults&&Object.keys(p.defaults).length>0){ov.push([],["Standardwerte"]);Object.entries(p.defaults).forEach(([k,v])=>{if(v&&FIELDS[k])ov.push([FIELDS[k].label,v]);});}
 
   // Gemeinsame Daten-Spalten (Verglasung, Fenster, Zustand, Geometrie, Maße, Notizen)
-  const zOn=p.zustandModus&&p.zustandModus!=="Keine";
+  const zOn=(p.zustandModus&&p.zustandModus!=="Keine")||(p.rooms||[]).some(r=>(r.fenster||[]).some(f=>f.zustandRahmen));
   const fHead=[];
   vf.forEach(([k,d])=>{fHead.push(d.label);if(d.src&&p.showSrc)fHead.push(d.label+" [Quelle]");});
   ff.forEach(([k,d])=>{fHead.push(d.label);if(d.src&&p.showSrc)fHead.push(d.label+" [Quelle]");});
@@ -439,15 +474,19 @@ function buildExport(p){
   // Blatt "Verglasungen": eine Zeile je Verglasung, Kennzahlen je Messart
   const vHead=["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Erfasst"];
   MS_KEYS.forEach(t=>{const T=MS_TYPES[t];vHead.push(`${T.label} Anzahl`,`${T.label} Ø [${T.unit}]`,`${T.label} min [${T.unit}]`,`${T.label} max [${T.unit}]`);});
+  vHead.push("Nicht messbar");
   const vr=[[...vHead,...fHead]];
   // Blatt "Messungen": eine Zeile je Messwert (Verglasungen ohne Messung: eine Zeile ohne Wert)
-  const mr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Messart","Messwert","Einheit","Messung-Nr","Zeitstempel","Datum","Uhrzeit","Fotos",...fHead]];
+  const mr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Messart","Messwert","Einheit","Messung-Nr","Zeitstempel","Datum","Uhrzeit","Fotos","Status",...fHead]];
   rooms.forEach(room=>{(room.fenster||[]).forEach(fen=>{(fen.verglasungen||[]).forEach(vg=>{
     const L=loc(room,fen,vg),fc=fCells(fen,vg),ms=vg.messungen||[];
-    const vrow=[...L,vgErf(fen,vg)?"ja":"nein"];MS_KEYS.forEach(t=>{const st=msStats(msOf(vg,t));vrow.push(st?st.n:"",st?st.avg:"",st?st.min:"",st?st.max:"");});vr.push([...vrow,...fc]);
-    if(!ms.length){mr.push([...L,"","","","","","","","",...fc]);return;}
+    const vrow=[...L,vgErf(fen,vg)?"ja":"nein"];MS_KEYS.forEach(t=>{const st=msStats(msOf(vg,t));vrow.push(st?st.n:"",st?st.avg:"",st?st.min:"",st?st.max:"");});vrow.push(skipText(vg));vr.push([...vrow,...fc]);
+    const skips=MS_KEYS.filter(t=>msSkipOf(vg,t));   // «nicht messbar»: eine Zeile je Messart ohne Wert
+    if(!ms.length&&!skips.length){mr.push([...L,"","","","","","","","","",...fc]);return;}
     const cnt={};ms.forEach(m=>{const t=msTyp(m),T=MS_TYPES[t];cnt[t]=(cnt[t]||0)+1;const z=new Date(m.zeit),ok=!isNaN(z);
-      mr.push([...L,T.label,m.wert,T.unit,cnt[t],m.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"",(msFiles[m.id]||[]).join(", "),...fc]);});
+      mr.push([...L,T.label,m.wert,T.unit,cnt[t],m.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"",(msFiles[m.id]||[]).join(", "),"",...fc]);});
+    skips.forEach(t=>{const sk=msSkipOf(vg,t),z=new Date(sk.zeit),ok=!isNaN(z);
+      mr.push([...L,MS_TYPES[t].label,"",MS_TYPES[t].unit,"",sk.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"","","nicht messbar: "+sk.grund,...fc]);});
   });});});
 
   // Blatt "Zusammenfassung" je Raum
@@ -618,11 +657,12 @@ function Photos({photos:ps,onAdd,onDel,label:l}){const[vi,setVi]=useState(null);
   </div>;
 }
 // Ziffernblock für Messwerte; "±" für Messarten mit negativen Werten (Taupunkt). onSubmit → false = nicht gespeichert
-function NumPad({value:v,onChange:ch,onSubmit:sub,unit,neg}){
+function NumPad({value:v,onChange:ch,onSubmit:sub,onNext:nxt,nextLabel,unit,neg}){
   const pr=k=>{if(k==="DEL")ch(v.slice(0,-1));else if(k==="."){if(!v.includes("."))ch((v===""||v==="-"?v+"0":v)+".");}else if(k==="±")ch(v.startsWith("-")?v.slice(1):"-"+v);else ch(v+k);};
   const ok=v!==""&&!isNaN(parseFloat(v));
   return <div><div style={$.numD}>{v||"—"}{v&&unit?<span style={{fontSize:20,letterSpacing:0,marginLeft:6}}>{unit}</span>:null}</div><div style={$.numG}>{["7","8","9","4","5","6","1","2","3"].map(k=><div key={k} style={$.numK} onClick={()=>pr(k)}>{k}</div>)}<div style={$.numK} onClick={()=>pr(".")}>.</div><div style={$.numK} onClick={()=>pr("0")}>0</div><div style={$.numK} onClick={()=>pr("DEL")}>⌫</div></div>
-    <div style={{display:"flex",gap:6,marginTop:8}}>{neg&&<button style={{...$.btn,...$.bO,flex:1,fontSize:18}} onClick={()=>pr("±")}>±</button>}<button style={{...$.btn,...$.bO,flex:1}} onClick={()=>ch("")}>Leeren</button><button style={{...$.btn,...$.bP,flex:2,opacity:ok?1:0.5}} onClick={()=>{if(ok&&sub(v)!==false)ch("");}}>✓ Speichern</button></div></div>;
+    <div style={{display:"flex",gap:6,marginTop:8}}>{neg&&<button style={{...$.btn,...$.bO,flex:1,fontSize:18}} onClick={()=>pr("±")}>±</button>}<button style={{...$.btn,...$.bO,flex:1}} onClick={()=>ch("")}>Leeren</button><button style={{...$.btn,...(nxt?$.bO:$.bP),flex:2,opacity:ok?1:0.5}} onClick={()=>{if(ok&&sub(v)!==false)ch("");}}>✓ Speichern</button></div>
+    {nxt&&<button style={{...$.btn,...$.bP,...$.bBl,marginTop:6,opacity:ok?1:0.5}} onClick={()=>{if(ok&&nxt(v)!==false)ch("");}}>{nextLabel||"✓ Speichern & weiter →"}</button>}</div>;
 }
 // Auswahl Gebäudeteil/Trakt: vorhandene Einträge oder neuen Namen eingeben
 function TraktPick({value,onChange,list}){const[neu,setNeu]=useState(!!value&&!list.includes(value));
@@ -804,6 +844,7 @@ function App(){
   const[dupQty,setDupQty]=useState(1); // Anzahl Kopien beim Raum-/Fenster-Duplizieren
   const[dupFenId,setDupFenId]=useState(null); // Ziel-Fenster beim Duplizieren
   const[msT,setMsT]=useState("gas"); // aktive Messart im Ziffernblock (bleibt beim Blättern erhalten)
+  const[showAll,setShowAll]=useState(false); // Messprofil: Raumansicht mit allen Fensterangaben statt kompakter Liste
   const[bootMsg,setBootMsg]=useState(""); // Fortschritt beim Start (Foto-Migration)
   const[bootErr,setBootErr]=useState(null);
   const[busyMsg,setBusyMsg]=useState(""); // länger laufende Aktionen (ZIP, Import)
@@ -847,7 +888,7 @@ function App(){
 
   const hasData=p=>{let n=0;(p?.rooms||[]).forEach(r=>(r.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{n+=(v.messungen||[]).length;})));return n>0;};
 
-  const createProj=()=>{const p={id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"fenster",zustandModus:"Keine",activeFields:[...PRESETS.standard.fields],defaults:{},trakte:[],rooms:[]};setProj(p);setView("setup");};
+  const createProj=()=>{const p=applyProfile({id:uid(),name:"",gebaeude:"",adresse:"",erstellt:new Date().toISOString(),geaendert:new Date().toISOString(),modus:"fenster",zustandModus:"Keine",activeFields:[],defaults:{},trakte:[],rooms:[]},"aufnahme");setProj(p);setView("setup");};
   const delProj=async id=>{const old=projects.find(x=>x.id===id);await dbDel(id);if(old)phDel(photoIdsIn(old));setProjects(p=>p.filter(x=>x.id!==id));if(proj?.id===id){setProj(null);setView("home");}};
 
   // Gebäudeteile (Trakte): Ebene über Geschoss/Raum. Räume tragen den Namen in room.trakt, die Reihenfolge steht in p.trakte.
@@ -952,9 +993,9 @@ function App(){
   const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({id:uid(),nr:(f.verglasungen.length||0)+1,messungen:[],data:{},sources:{},photos:[],notizen:""});}});
   // „aus Geometrie übernehmen": fehlende Verglasungen anlegen (nie löschen), Felder in Lesereihenfolge positional zuordnen
   const syncVgFromGeo=(rId,fId)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(!f||!f.geometrie)return;const g=normalizeGeo(f.geometrie),n=geoCellCount(g);if(!f.verglasungen)f.verglasungen=[];while(f.verglasungen.length<n)f.verglasungen.push({id:uid(),nr:f.verglasungen.length+1,messungen:[],data:{},sources:{},photos:[],notizen:""});f.geometrie=geoMapLeaves(g,(l,path,i)=>({...l,vg:f.verglasungen[i].id}));});flash("Aus Geometrie übernommen");};
-  const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];});if(f.geometrie)f.geometrie=geoRemapVg(f.geometrie,map);});return c;};
+  const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(f.geometrie)f.geometrie=geoRemapVg(f.geometrie,map);});return c;};
   const dupRoom=(rId,count)=>{mut(p=>{const idx=p.rooms.findIndex(x=>x.id===rId);if(idx<0)return;const r=p.rooms[idx];const N=Math.max(1,count|0||1);const taken=new Set(p.rooms.map(x=>x.raumnummer));const baseNm=r.raumnummer||r.raumId||"Raum";let n=2;for(let i=0;i<N;i++){const c=cloneRoomData(r);c.geschoss=r.geschoss;let nm;do{nm=`${baseNm} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.raumnummer=nm;p.rooms.splice(idx+1+i,0,c);}});flash("Raum dupliziert");};
-  const cloneFenData=f=>{const c=JSON.parse(JSON.stringify(f));c.id=uid();c.photos=[];const map={};(c.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];});if(c.geometrie)c.geometrie=geoRemapVg(c.geometrie,map);return c;};
+  const cloneFenData=f=>{const c=JSON.parse(JSON.stringify(f));c.id=uid();c.photos=[];const map={};(c.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(c.geometrie)c.geometrie=geoRemapVg(c.geometrie,map);return c;};
   const dupFen=(rId,fId,count)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const idx=r.fenster.findIndex(x=>x.id===fId);if(idx<0)return;const src=r.fenster[idx];const N=Math.max(1,count|0||1);const taken=new Set(r.fenster.map(x=>x.nr));const base=src.nr||`F${idx+1}`;let n=2;for(let i=0;i<N;i++){const c=cloneFenData(src);let nm;do{nm=`${base} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.nr=nm;r.fenster.splice(idx+1+i,0,c);}});flash("Fenster dupliziert");};
   const quickAdd=(rId,n)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const s=nextNr(r,"V");for(let i=0;i<n;i++)r.fenster.push({id:uid(),nr:`V${s+i}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});});flash(`+${n}`);};
 
@@ -973,7 +1014,9 @@ function App(){
 
   const addMs=(rId,fId,vId,typ,val)=>{const T=MS_TYPES[typ]||MS_TYPES.gas;const w=parseFloat(String(val).replace(",","."));if(isNaN(w)){flash("Ungültiger Wert");return false;}
     if(w<T.min||w>T.max){if(!confirm(`${w} ${T.unit} liegt außerhalb des üblichen Bereichs für ${T.label} (${T.min} bis ${T.max} ${T.unit}). Trotzdem speichern?`))return false;}
-    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v){if(!v.messungen)v.messungen=[];v.messungen.push({id:uid(),typ,wert:w,zeit:new Date().toISOString()});}});flash(`${T.label} ${w} ${T.unit} ✓`);return true;};
+    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v){if(!v.messungen)v.messungen=[];v.messungen.push({id:uid(),typ,wert:w,zeit:new Date().toISOString()});if(v.msSkip&&v.msSkip[typ]){delete v.msSkip[typ];if(!Object.keys(v.msSkip).length)delete v.msSkip;}}});flash(`${T.label} ${w} ${T.unit} ✓`);return true;};
+  // Status «nicht messbar» je Messart setzen (grund) bzw. aufheben (grund=null)
+  const setSkip=(rId,fId,vId,typ,grund)=>{mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(!v)return;if(grund){v.msSkip={...(v.msSkip||{}),[typ]:{grund,zeit:new Date().toISOString()}};}else if(v.msSkip){delete v.msSkip[typ];if(!Object.keys(v.msSkip).length)delete v.msSkip;}});};
   // Messwert nach ID löschen; verknüpfte Messfotos (Metadaten + Blobs) werden mit entfernt
   const delMs=(rId,fId,vId,mId)=>{if(!mId)return;const phs=msPhotos(gV(gF(gR(projRef.current,rId),fId),vId),mId).map(x=>x.id);
     mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(!v)return;v.messungen=(v.messungen||[]).filter(m=>m.id!==mId);if(phs.length)v.photos=(v.photos||[]).filter(x=>x.msId!==mId);});if(phs.length)phDel(phs);};
@@ -987,7 +1030,7 @@ function App(){
   const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});phDel([pId]);};
 
   const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=x.kb?x.kb*1024:(x.data||"").length*0.75;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});return{rooms:(p?.rooms||[]).length,g,m,ph,mb:pb/1048576};};
-  const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgErf(f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
+  const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgDone(proj,f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
   const isA=k=>(proj?.activeFields||[]).includes(k);
   const secFs=id=>secFields(id).filter(([k,d])=>isA(k)&&(d.t!=="zustand"||hasZ()));   // aktive Felder eines Abschnitts (inkl. Sonderfelder Zustand/Geometrie/Rahmenmaße)
   const kennSum=(flds,rec,fenRec,vgRec)=>flds.map(([k,d])=>{const val=rec?.data?.[k]||getDef(k,fenRec,vgRec);return val?`${d.label.split(" [")[0]} ${val}`:null;}).filter(Boolean).join(" · ")||"keine Werte";   // Zusammenfassung eingeklappter Kennwerte
@@ -1031,7 +1074,7 @@ function App(){
     </div>
     <div style={$.card}><div style={$.cardT}>Kurzanleitung</div>
       <ol style={{margin:0,paddingLeft:18,fontSize:13,lineHeight:1.55}}>
-        <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und Profil wählen.</li>
+        <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und <b>Erfassungsprofil</b> wählen: Kurzaufnahme, Aufnahme, Detailaufnahme – oder für Messbegehungen Gasfüllgrad, Taupunkt, Ug-Messung. Messprofile zeigen nur ihre Messart, eine kompakte Raumliste und den Fortschritt «gemessen»; «Speichern &amp; weiter» springt zur nächsten offenen Verglasung, «nicht messbar» hält den Grund fest. Das Profil lässt sich vor jeder Begehung umschalten, Daten bleiben erhalten.</li>
         <li>Optional <b>Gebäudeteile/Trakte</b> in der Einrichtung anlegen. <b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren, mit <b>✎</b> umbenennen.</li>
         <li><b>Fenster</b> hinzufügen (gleichartige mit <b>⧉</b> duplizieren) und von oben nach unten erfassen: Übersichtsfoto, Lage & Aufbau (Fassade, Bauart, <b>Geometrie</b>: Vorlage wählen, Felder antippen → Öffnungsart, Bandseite, Verglasung; senkrecht/waagrecht teilen, Oberlicht/Brüstung ergänzen), Rahmen, Funktion & Zustand, Kennwerte, Bemerkungen.</li>
         <li><b>Verglasung</b> öffnen → Glasstempel (Foto + Text), Aufbau, Fotos, optional <b>Messungen</b> (Gasfüllgrad, Ug gemessen, Taupunkt – beliebig viele Werte; je Wert ein 📷 z.B. für das Display des Messgeräts), Kennwerte (Ug/g/ψ mit Standardwerten), Bemerkungen. <b>Fotos</b>: 📷 Kamera / 🖼️ Galerie; antippen zum Vergrößern.</li>
@@ -1088,6 +1131,12 @@ function App(){
         <div style={{flex:1}}><label style={$.lbl}>Feuchte innen [%rF]</label><input style={$.inp} type="number" value={p.feuchteInnen||""} onChange={e=>setProj({...p,feuchteInnen:e.target.value})}/></div>
       </div>
     </div>
+    <div style={$.card}><div style={$.cardT}>Erfassungsprofil{profCustom(p)&&<span style={{textTransform:"none",fontWeight:400,color:C.warn,letterSpacing:0}}> · angepasst</span>}</div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Voreinstellung für die Begehung: setzt Felder, Zustand Rahmen und Datenquelle (danach anpassbar). Messprofile zeigen nur ihre Messart, die Messkarte zuerst, eine kompakte Raumliste und den Fortschritt «gemessen». Vorhandene Daten bleiben erhalten.{!profOf(p)&&<span style={{color:C.warn}}> Noch kein Profil gewählt – es gilt die eigene Feldauswahl.</span>}</div>
+      {["Aufnahme","Messung"].map(grp=><div key={grp} style={{marginBottom:8}}><div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4}}>{grp.toUpperCase()}</div><div style={{display:"flex",gap:6}}>{Object.entries(PROFILES).filter(([,pr])=>pr.grp===grp).map(([k,pr])=><button key={k} style={{...$.btn,...(p.profil===k?$.bP:$.bO),...$.bS,flex:1,flexDirection:"column",padding:"8px 4px",height:"auto"}} onClick={()=>{setProj(applyProfile(p,k));flash(`Profil «${pr.name}»`);}}><span style={{fontWeight:700,fontSize:12}}>{pr.name}</span><span style={{fontSize:9,opacity:0.8}}>{pr.desc}</span></button>)}</div></div>)}
+      <Sec title="Felder anpassen" collapsed summary={`${af.size} von ${Object.keys(FIELDS).length} Feldern aktiv`}>
+      {["f","v"].map(g=><div key={g}><div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4,marginTop:g==="v"?12:0}}>{g==="f"?"FENSTER":"VERGLASUNG"}</div>
+        {SECTIONS.filter(sc=>sc.g===g).map(sc=><div key={sc.id}><div style={{...$.lbl,marginTop:6,color:C.tx3}}>{sc.title}</div>{secFields(sc.id).map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}</div>)}</div>)}</Sec></div>
     <div style={$.card}><div style={$.cardT}>Gebäudeteile / Trakte</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Optional: Ebene über Geschoss und Raum, z.B. „Schulhaus", „Turnhalle", „Trakt A". Räume werden in der Raumliste danach gruppiert.</div>
       {traktList(p).map((t,i,a)=>{const cnt=(p.rooms||[]).filter(r=>r.trakt===t).length;return <div key={t} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 0",borderBottom:`1px solid ${C.bd}`}}>
@@ -1101,10 +1150,6 @@ function App(){
     <div style={$.card}><div style={$.cardT}>Optionen</div><Tog label="Datenquelle erfassen (M/H/P)" value={!!p.showSrc} onChange={v=>setProj({...p,showSrc:v})}/><div style={{fontSize:11,color:C.tx2,marginTop:2}}>Blendet die Quelle-Auswahl (Messwert/Hersteller/Planung) je Wert ein.</div></div>
     <div style={$.card}><div style={$.cardT}>Modus</div>{hasData(p)&&<div style={{fontSize:11,color:C.warn,marginBottom:6}}>⚠ Modus kann nicht geändert werden, da bereits Messdaten vorhanden sind.</div>}<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Standard: „Fenster + Verglasung" (mit Geometrie & Rahmen). „Nur Verglasungen" nur für reine Glaserfassung ohne Fensterdaten.</div><div style={{display:"flex",gap:8}}>{[["fenster","⊞","Fenster + Verglasung"],["verglasung","◻","Nur Verglasungen"]].map(([m,i,t])=><div key={m} onClick={()=>trySetModus(m)} style={{flex:1,padding:10,borderRadius:8,border:`2px solid ${p.modus===m?C.ac:C.bd}`,background:p.modus===m?C.acBg:"transparent",cursor:"pointer",textAlign:"center",opacity:hasData(p)&&p.modus!==m?0.4:1}}><div style={{fontSize:22}}>{i}</div><div style={{fontWeight:700,fontSize:12,marginTop:2}}>{t}</div></div>)}</div></div>
     <div style={$.card}><div style={$.cardT}>Zustand Rahmen</div><div style={{display:"flex",gap:4}}>{["Keine","Einfach","Freitext","Detailliert"].map(z=><div key={z} onClick={()=>setProj({...p,zustandModus:z})} style={{flex:1,padding:"7px 2px",borderRadius:6,border:`1px solid ${(p.zustandModus||"Keine")===z?C.ac:C.bd}`,background:(p.zustandModus||"Keine")===z?C.acBg:"transparent",cursor:"pointer",textAlign:"center",fontSize:11,fontWeight:600}}>{z}</div>)}</div></div>
-    <div style={$.card}><div style={$.cardT}>Profil</div><div style={{display:"flex",gap:6,marginBottom:10}}>{Object.entries(PRESETS).map(([k,pr])=><button key={k} style={{...$.btn,...$.bO,...$.bS,flex:1,flexDirection:"column",padding:"8px 4px",height:"auto"}} onClick={()=>setProj({...p,activeFields:[...pr.fields]})}><span style={{fontWeight:700,fontSize:12}}>{pr.name}</span><span style={{fontSize:9,color:C.tx2}}>{pr.desc}</span></button>)}</div>
-      {["f","v"].map(g=><div key={g}><div style={{fontSize:11,fontWeight:700,color:C.ac,marginBottom:4,marginTop:g==="v"?12:0}}>{g==="f"?"FENSTER":"VERGLASUNG"}</div>
-        {SECTIONS.filter(sc=>sc.g===g).map(sc=><div key={sc.id}><div style={{...$.lbl,marginTop:6,color:C.tx3}}>{sc.title}</div>{secFields(sc.id).map(([k,d])=><Tog key={k} label={`${d.label}${d.src?" ᴹᴴᴾ":""}`} value={af.has(k)} onChange={()=>togF(k)}/>)}</div>)}</div>)}</div>
-
     {/* Project Defaults */}
     <div style={$.card}><div style={$.cardT}>Standardwerte (Projekt)</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Diese Werte werden als Vorbelegung für alle neuen Einträge verwendet und können pro Fenster/Verglasung überschrieben werden.</div>
@@ -1173,6 +1218,7 @@ function App(){
     const tGroups=useT?[...tl,""].map(t=>({t,rooms:(p.rooms||[]).filter(r=>(r.trakt||"")===t)})).filter(g=>g.t||g.rooms.length):[];
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{s.rooms}</div><div style={$.statL}>Räume</div></div><div style={$.stat}><div style={$.statV}>{s.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{s.m}</div><div style={$.statL}>Mess.</div></div><div style={$.stat}><div style={$.statV}>{s.ph}</div><div style={$.statL}>Fotos</div></div></div>
+    {profOf(p)&&<div onClick={()=>setView("setup")} style={{fontSize:12,color:C.tx2,margin:"-2px 2px 10px",cursor:"pointer"}}>Profil: <b style={{color:profMess(p)?C.ac:C.tx}}>{profOf(p).name}</b>{profCustom(p)?" (angepasst)":""}{profMess(p)?" · Fortschritt = gemessen":""} <span style={{color:C.ac}}>· ändern</span></div>}
     <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler");}}} >📊 Excel</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doCSVExport(p);flash("CSV ✓");}}>📄 CSV</button>
@@ -1197,6 +1243,17 @@ function App(){
   // ROOM
   if(view==="room"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);if(!rm){setView("survey");return null;}
     const rs=rSt(rm);const isV=p.modus==="verglasung";const vf=vFs();
+    // Messprofil: kompakte Liste (eine Zeile je Verglasung: Wert(e) der Profil-Messart, Status) statt Fensterformularen
+    const mess=profMess(p),msKeys=profMs(p);
+    const openMs=(f,v)=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");};
+    const msSum=v=>msKeys.map(t=>{const st=msStats(msOf(v,t));return st?`${MS_TYPES[t].short} ${st.n>1?"Ø ":""}${st.avg} ${MS_TYPES[t].unit}${st.n>1?" ×"+st.n:""}`:null;}).filter(Boolean).join(" · ");
+    const stBadge=v=>{const sk=msKeys.map(t=>msSkipOf(v,t)).find(Boolean);return sk?<span style={{...$.badge,background:C.warnBg,color:C.warn}} title={sk.grund}>n. m.</span>:vgGemessen(p,v)?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:<span style={{...$.badge,background:C.sf2,color:C.tx3}}>offen</span>;};
+    const raumFotos=<div style={$.card}><Photos label="Raum-Fotos" photos={rm.photos||[]} onAdd={ph=>addPh(rm.id,null,null,ph)} onDel={pid=>delPh(rm.id,null,null,pid)}/></div>;
+    const compactList=<>{<div style={{...$.card,padding:"4px 10px"}}>{(rm.fenster||[]).flatMap(f=>(f.verglasungen||[]).map(v=>{const multi=(f.verglasungen||[]).length>1;
+      return <div key={v.id} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 2px",borderBottom:`1px solid ${C.bd}`,cursor:"pointer"}} onClick={()=>openMs(f,v)}>
+        <span style={{fontWeight:800,fontSize:14,whiteSpace:"nowrap"}}>{isV?f.nr:f.nr+(multi?` · V${v.nr}`:"")}</span>
+        <span style={{flex:1,minWidth:0,fontFamily:"monospace",fontSize:13,color:C.ac,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{msSum(v)}</span>
+        {stBadge(v)}<span style={{color:C.tx3}}>›</span></div>;}))}</div>}{raumFotos}</>;
     const fld=(f,[k,d])=>{  // Feld eines Abschnitts rendern (Sonderfelder: Zustand Rahmen, Geometrie, Rahmenmaße)
       if(d.t==="zustand")return <ZustInp key={k} modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>;
       if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv){setRoom(rm);setFen(f);setVg(vv);setNumVal("");setView("measure");}}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>;
@@ -1205,6 +1262,7 @@ function App(){
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("survey")}>← Räume</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div><button style={$.hdrB} onClick={()=>setEdR({trakt:rm.trakt||"",geschoss:rm.geschoss||"EG",raumnummer:rm.raumnummer||"",raumId:rm.raumId||""})} title="Raum bearbeiten">✎</button><button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
+    {mess&&<div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:C.tx2,marginBottom:3}}><span>{profOf(p).name}: {rs.e}/{rs.g} gemessen</span><button style={{...$.btn,...$.bO,...$.bS,padding:"3px 9px",fontSize:11}} onClick={()=>setShowAll(x=>!x)}>{showAll?"Kompakte Liste":"Alle Angaben"}</button></div><div style={$.prog}><div style={$.progF(rs.g?rs.e/rs.g*100:0)}/></div></div>}
     {/* Quick add with custom input */}
     {isV&&<div style={{...$.card,padding:10}}>
       <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
@@ -1216,9 +1274,9 @@ function App(){
         </div>
       </div>
     </div>}
-    <div style={$.card}><Photos label="Raum-Fotos" photos={rm.photos||[]} onAdd={ph=>addPh(rm.id,null,null,ph)} onDel={pid=>delPh(rm.id,null,null,pid)}/></div>
+    {!(mess&&!showAll)&&raumFotos}
     {(rm.fenster||[]).length===0?<div style={$.empty}><div style={{fontSize:32,marginBottom:6}}>{isV?"◻":"⊞"}</div><div style={{fontWeight:700,fontSize:14}}>{isV?"Keine Verglasungen":"Keine Fenster"}</div></div>
-    :(rm.fenster||[]).map(f=>{
+    :mess&&!showAll?compactList:(rm.fenster||[]).map(f=>{
       if(isV){const v=f.verglasungen[0];const lm=v?.messungen?.[v.messungen.length-1];return <div key={f.id} style={{...$.li,flexDirection:"column",alignItems:"stretch"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:8,flex:1,cursor:"pointer"}} onClick={()=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setView("measure");}}>
@@ -1273,8 +1331,9 @@ function App(){
   if(view==="measure"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);const v=f?.verglasungen?.find(x=>x.id===vg?.id);
     if(!rm||!f||!v){setView("room");return null;}
     const isV=p.modus==="verglasung";const label=isV?f.nr:`${f.nr} · Verglasung ${v.nr}`;const vf=vFs();
+    const mess=profMess(p),msKeys=profMs(p),msTa=msKeys.includes(msT)?msT:msKeys[0];   // Messprofil: nur dessen Messart(en)
     const vfld=([k,d])=><FldInp key={k} k={k} def={d} value={v.data?.[k]||""} source={v.sources?.[k]||""} onVal={val=>setFV(rm.id,f.id,v.id,k,val)} onSrc={sv=>setFS(rm.id,f.id,v.id,k,sv)} defaultVal={getDef(k,f,v)} showSrc={proj?.showSrc}/>;
-    let all=[];rm.fenster.forEach(x=>x.verglasungen.forEach(y=>all.push({f:x,v:y})));const idx=all.findIndex(x=>x.v.id===v.id);const tot=all.length;const msd=all.filter(x=>vgErf(x.f,x.v)).length;
+    let all=[];rm.fenster.forEach(x=>x.verglasungen.forEach(y=>all.push({f:x,v:y})));const idx=all.findIndex(x=>x.v.id===v.id);const tot=all.length;const msd=all.filter(x=>vgDone(p,x.f,x.v)).length;
     const go=i=>{setFen(all[i].f);setVg(all[i].v);setNumVal("");};
     const navTo=(i)=>guardNav(()=>go(i));
     const navBack=()=>guardNav(()=>setView("room"));
@@ -1287,26 +1346,22 @@ function App(){
       flash("Weitere Verglasung +");
     };
 
-  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div className="body" style={$.body}>
-    <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} erfasst</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
-    {!isV&&isA("geometrie")&&f.geometrie&&(geoHasContent(f.geometrie)||geoCellCount(f.geometrie)>1)&&(()=>{const lf=geoLeaves(f.geometrie).find(l=>l.node.vg===v.id);  // Mini-Skizze: Feld dieser Verglasung hervorgehoben, Tippen springt zur anderen Verglasung
-      return <div style={{...$.card,padding:10,display:"flex",gap:12,alignItems:"center"}}>
-        <div style={{width:130,flexShrink:0}}><GeoSvg mini geo={f.geometrie} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} verglasungen={f.verglasungen} highlightVg={v.id} onSel={(pth,n)=>{if(n.vg&&n.vg!==v.id){const i=all.findIndex(x=>x.v.id===n.vg);if(i>=0)navTo(i);}}}/></div>
-        <div style={{fontSize:11,color:C.tx2,lineHeight:1.5}}>{lf?<span>Feld: <b style={{color:C.tx}}>{lf.node.role||"Hauptfeld"}</b>{lf.node.art?` · ${lf.node.art}${lf.node.band?" ("+BAND_L[lf.node.band]+")":""}`:""}</span>:<span>Diese Verglasung ist keinem Feld zugeordnet (im Fenster „aus Geometrie übernehmen").</span>}<br/><span style={{color:C.tx3}}>Feld antippen = zu dieser Verglasung springen</span></div>
-      </div>;})()}
-    {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
-    {secFs("aufbau").length>0&&<div style={$.card}><Sec title="Aufbau">{secFs("aufbau").map(vfld)}</Sec></div>}
-    <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
-    {(()=>{const T=MS_TYPES[msT]||MS_TYPES.gas;const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.filter(m=>msTyp(m)===t)})).filter(g=>g.list.length);const msPh=(v.photos||[]).filter(p=>p.ms).length,orphans=msOrphans(v);
+    // Messkarte; «Speichern & weiter» springt zur nächsten nicht erledigten Verglasung des Raums
+    const weiter=()=>{const j=nextOpen(all,idx,x=>vgDone(p,x.f,x.v));if(j<0){setNumVal("");setView("room");flash("Alle Verglasungen im Raum erledigt ✓");}else go(j);};
+    const msCard=()=>{const T=MS_TYPES[msTa];const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.filter(m=>msTyp(m)===t)})).filter(g=>g.list.length);const msPh=(v.photos||[]).filter(p=>p.ms).length,orphans=msOrphans(v);
       return <div style={$.card}>
-        <div onClick={()=>setShowGas(g=>!g)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,cursor:"pointer"}}>
-          <div style={{...$.cardT,marginBottom:0}}>Messungen <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>· optional</span></div>
-          <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>{groups.map(g=>{const st=msStats(g.list),U=MS_TYPES[g.t];return <span key={g.t} style={{...$.badge,background:C.acBg,color:C.ac,fontFamily:"monospace"}}>{U.short} {st.n>1?"Ø ":""}{st.avg} {U.unit}{st.n>1?` ×${st.n}`:""}</span>;})}{msPh>0&&<span style={{...$.badge,background:C.sf2,color:C.tx2}}>📷 {msPh}</span>}<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span></div>
+        <div onClick={()=>{if(!mess)setShowGas(g=>!g);}} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,cursor:mess?"default":"pointer"}}>
+          <div style={{...$.cardT,marginBottom:0}}>Messungen <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>{mess?"· "+profOf(p).name:"· optional"}</span></div>
+          <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>{groups.map(g=>{const st=msStats(g.list),U=MS_TYPES[g.t];return <span key={g.t} style={{...$.badge,background:C.acBg,color:C.ac,fontFamily:"monospace"}}>{U.short} {st.n>1?"Ø ":""}{st.avg} {U.unit}{st.n>1?` ×${st.n}`:""}</span>;})}{msPh>0&&<span style={{...$.badge,background:C.sf2,color:C.tx2}}>📷 {msPh}</span>}{!mess&&<span style={{fontSize:12,color:C.tx3,transition:"transform 0.2s",transform:showGas?"rotate(0deg)":"rotate(-90deg)"}}>▼</span>}</div>
         </div>
-        {showGas&&<div style={{marginTop:12}}>
-          <div style={{display:"flex",gap:4,marginBottom:4}}>{MS_KEYS.map(t=><button key={t} style={{...$.btn,...$.bS,flex:1,padding:"7px 2px",flexDirection:"column",gap:1,...(msT===t?$.bP:$.bO)}} onClick={()=>{setMsT(t);if(!MS_TYPES[t].neg&&numVal.startsWith("-"))setNumVal(numVal.slice(1));}}><span style={{fontWeight:700}}>{MS_TYPES[t].label}</span><span style={{fontSize:10,opacity:0.8}}>{MS_TYPES[t].unit}</span></button>)}</div>
-          <NumPad value={numVal} onChange={setNumVal} unit={T.unit} neg={!!T.neg} onSubmit={val=>addMs(rm.id,f.id,v.id,msT,val)}/>
+        {(showGas||mess)&&<div style={{marginTop:12}}>
+          {msKeys.length>1&&<div style={{display:"flex",gap:4,marginBottom:4}}>{msKeys.map(t=><button key={t} style={{...$.btn,...$.bS,flex:1,padding:"7px 2px",flexDirection:"column",gap:1,...(msTa===t?$.bP:$.bO)}} onClick={()=>{setMsT(t);if(!MS_TYPES[t].neg&&numVal.startsWith("-"))setNumVal(numVal.slice(1));}}><span style={{fontWeight:700}}>{MS_TYPES[t].label}</span><span style={{fontSize:10,opacity:0.8}}>{MS_TYPES[t].unit}</span></button>)}</div>}
+          <NumPad value={numVal} onChange={setNumVal} unit={T.unit} neg={!!T.neg} onSubmit={val=>addMs(rm.id,f.id,v.id,msTa,val)} onNext={mess?(val=>{if(!addMs(rm.id,f.id,v.id,msTa,val))return false;weiter();}):null}/>
           <div style={{fontSize:10,color:C.tx3,marginTop:6}}>Beliebig viele Werte je Messart möglich – jeder Wert wird mit Zeitstempel gespeichert. 📷 in der Wertzeile: Foto zum Messwert (z.B. Display des Messgeräts).</div>
+          {mess&&(()=>{const sk=msSkipOf(v,msTa);return <div style={{marginTop:10,padding:"8px 10px",borderRadius:7,background:sk?C.warnBg:C.sf2}}>
+            {sk?<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}><span style={{fontSize:12,color:C.warn,fontWeight:700}}>Nicht messbar: {sk.grund}</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setSkip(rm.id,f.id,v.id,msTa,null)}>aufheben</button></div>
+            :<div><div style={{fontSize:11,color:C.tx2,marginBottom:5}}>Nicht messbar?</div><div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{NM_GRUENDE.map(g=><button key={g} style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px",fontSize:11}} onClick={()=>{setSkip(rm.id,f.id,v.id,msTa,g);flash("Nicht messbar: "+g);}}>{g}</button>)}</div></div>}
+          </div>;})()}
           {groups.map(g=>{const st=msStats(g.list),U=MS_TYPES[g.t];return <div key={g.t} style={{marginTop:12}}>
             <div style={{...$.cardT,marginBottom:4}}>{U.label} ({st.n}){st.n>1&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3,letterSpacing:0}}> · Ø {st.avg} · {st.min} bis {st.max} {U.unit}</span>}</div>
             {g.list.map((m,j)=>{const phs=msPhotos(v,m.id);return <div key={m.id||j} style={{padding:"5px 0",borderBottom:j<g.list.length-1?`1px solid ${C.bd}`:"none"}}>
@@ -1320,7 +1375,19 @@ function App(){
           </div>;})}
           {orphans.length>0&&<div style={{marginTop:12}}><div style={{...$.cardT,marginBottom:4}}>Messfotos ohne Wert ({orphans.length})</div><ThumbRow photos={orphans} title="Messfoto ohne Wert" onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>}
         </div>}
+      </div>;};
+  return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>← Raum</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div></div><div className="body" style={$.body}>
+    <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} {mess?"gemessen":"erfasst"}</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
+    {!isV&&isA("geometrie")&&f.geometrie&&(geoHasContent(f.geometrie)||geoCellCount(f.geometrie)>1)&&(()=>{const lf=geoLeaves(f.geometrie).find(l=>l.node.vg===v.id);  // Mini-Skizze: Feld dieser Verglasung hervorgehoben, Tippen springt zur anderen Verglasung
+      return <div style={{...$.card,padding:10,display:"flex",gap:12,alignItems:"center"}}>
+        <div style={{width:130,flexShrink:0}}><GeoSvg mini geo={f.geometrie} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} verglasungen={f.verglasungen} highlightVg={v.id} onSel={(pth,n)=>{if(n.vg&&n.vg!==v.id){const i=all.findIndex(x=>x.v.id===n.vg);if(i>=0)navTo(i);}}}/></div>
+        <div style={{fontSize:11,color:C.tx2,lineHeight:1.5}}>{lf?<span>Feld: <b style={{color:C.tx}}>{lf.node.role||"Hauptfeld"}</b>{lf.node.art?` · ${lf.node.art}${lf.node.band?" ("+BAND_L[lf.node.band]+")":""}`:""}</span>:<span>Diese Verglasung ist keinem Feld zugeordnet (im Fenster „aus Geometrie übernehmen").</span>}<br/><span style={{color:C.tx3}}>Feld antippen = zu dieser Verglasung springen</span></div>
       </div>;})()}
+    {mess&&msCard()}
+    {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
+    {secFs("aufbau").length>0&&<div style={$.card}><Sec title="Aufbau">{secFs("aufbau").map(vfld)}</Sec></div>}
+    <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
+    {!mess&&msCard()}
     {secFs("vkenn").length>0&&<div style={$.card}><Sec title="Kennwerte" collapsed summary={kennSum(secFs("vkenn"),v,f,v)}>{secFs("vkenn").map(vfld)}</Sec></div>}
     <div style={$.card}><div style={$.cardT}>Bemerkungen</div><DInp multiline style={{...$.inp,...$.inpS}} value={v.notizen||""} onCommit={t=>setNotiz(rm.id,f.id,v.id,t)} placeholder="Auffälligkeiten, Hinweise zur Verglasung…"/></div>
     {/* Navigation */}
