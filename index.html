@@ -397,10 +397,15 @@ const MS_TYPES={
   tp:{label:"Taupunkt",short:"TP",unit:"°C",min:-80,max:30,neg:true},
 };
 const MS_KEYS=Object.keys(MS_TYPES);
+// Gasmessgeräte: der Portable misst auch Glasdicken/SZR und 3-fach-Glas, der Handheld nur 2-fach ohne Aufbau.
+// Messwert-Zusätze (nur Gas): geraet (Schlüssel), szr (1|2 bei 3-fach), aufbau («4/16/4», vom Portable)
+const GAS_GERAETE={portable:{label:"Sparklike Laser Portable",short:"Portable",aufbau:true,dreifach:true},handheld:{label:"Sparklike Handheld",short:"Handheld",aufbau:false,dreifach:false}};
+const aufbauSzr=s=>{const n=String(s||"").split("/").map(x=>x.trim()).filter(Boolean).length;return n>=3&&n%2===1?(n-1)/2:0;};   // Anzahl SZR aus «4/16/4» (1) bzw. «4/12/4/12/4» (2)
+const msZusatz=m=>m?[m.geraet&&GAS_GERAETE[m.geraet]?GAS_GERAETE[m.geraet].short:"",m.szr?"SZR "+m.szr:"",m.aufbau||""].filter(Boolean).join(" · "):"";
 const msTyp=m=>(m&&m.typ&&MS_TYPES[m.typ])?m.typ:"gas";
 const msOf=(v,t)=>((v&&v.messungen)||[]).filter(m=>msTyp(m)===t);
-const fmtMs=m=>m?`${m.wert} ${MS_TYPES[msTyp(m)].unit}`:"";
-const msLabel=m=>m?`${MS_TYPES[msTyp(m)].label} ${m.wert} ${MS_TYPES[msTyp(m)].unit}`:"";   // „Gasfüllgrad 92 %" – Titel im Betrachter und Export
+const fmtMs=m=>m?`${m.wert} ${MS_TYPES[msTyp(m)].unit}${m.szr?" (SZR "+m.szr+")":""}`:"";
+const msLabel=m=>m?`${MS_TYPES[msTyp(m)].label} ${m.wert} ${MS_TYPES[msTyp(m)].unit}${m.szr?" (SZR "+m.szr+")":""}`:"";   // „Gasfüllgrad 92 %" – Titel im Betrachter und Export
 const msPhotos=(v,mId)=>mId?((v&&v.photos)||[]).filter(p=>p.msId===mId):[];             // Messfotos eines Messwerts
 const msOrphans=v=>{const ids=new Set(((v&&v.messungen)||[]).map(m=>m.id));return ((v&&v.photos)||[]).filter(p=>p.ms&&!ids.has(p.msId));}; // Messfotos ohne passenden Messwert
 // Messprofil: Messarten des Profils (sonst alle), Status «nicht messbar» je Messart (v.msSkip[typ]={grund,zeit})
@@ -477,16 +482,16 @@ function buildExport(p){
   vHead.push("Nicht messbar");
   const vr=[[...vHead,...fHead]];
   // Blatt "Messungen": eine Zeile je Messwert (Verglasungen ohne Messung: eine Zeile ohne Wert)
-  const mr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Messart","Messwert","Einheit","Messung-Nr","Zeitstempel","Datum","Uhrzeit","Fotos","Status",...fHead]];
+  const mr=[["Gebäudeteil","Geschoss","Raum-ID","Raumnummer","Fenster-Nr","Verglasung-Nr","Messart","Messwert","Einheit","Messung-Nr","Zeitstempel","Datum","Uhrzeit","Fotos","Status","Gerät","SZR","Aufbau gemessen [mm]",...fHead]];
   rooms.forEach(room=>{(room.fenster||[]).forEach(fen=>{(fen.verglasungen||[]).forEach(vg=>{
     const L=loc(room,fen,vg),fc=fCells(fen,vg),ms=vg.messungen||[];
     const vrow=[...L,vgErf(fen,vg)?"ja":"nein"];MS_KEYS.forEach(t=>{const st=msStats(msOf(vg,t));vrow.push(st?st.n:"",st?st.avg:"",st?st.min:"",st?st.max:"");});vrow.push(skipText(vg));vr.push([...vrow,...fc]);
     const skips=MS_KEYS.filter(t=>msSkipOf(vg,t));   // «nicht messbar»: eine Zeile je Messart ohne Wert
-    if(!ms.length&&!skips.length){mr.push([...L,"","","","","","","","","",...fc]);return;}
+    if(!ms.length&&!skips.length){mr.push([...L,"","","","","","","","","","","","",...fc]);return;}
     const cnt={};ms.forEach(m=>{const t=msTyp(m),T=MS_TYPES[t];cnt[t]=(cnt[t]||0)+1;const z=new Date(m.zeit),ok=!isNaN(z);
-      mr.push([...L,T.label,m.wert,T.unit,cnt[t],m.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"",(msFiles[m.id]||[]).join(", "),"",...fc]);});
+      mr.push([...L,T.label,m.wert,T.unit,cnt[t],m.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"",(msFiles[m.id]||[]).join(", "),"",m.geraet&&GAS_GERAETE[m.geraet]?GAS_GERAETE[m.geraet].label:"",m.szr||"",m.aufbau||"",...fc]);});
     skips.forEach(t=>{const sk=msSkipOf(vg,t),z=new Date(sk.zeit),ok=!isNaN(z);
-      mr.push([...L,MS_TYPES[t].label,"",MS_TYPES[t].unit,"",sk.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"","","nicht messbar: "+sk.grund,...fc]);});
+      mr.push([...L,MS_TYPES[t].label,"",MS_TYPES[t].unit,"",sk.zeit||"",ok?z.toLocaleDateString("de-CH"):"",ok?z.toLocaleTimeString("de-CH"):"","","nicht messbar: "+sk.grund,"","","",...fc]);});
   });});});
 
   // Blatt "Zusammenfassung" je Raum
@@ -845,6 +850,9 @@ function App(){
   const[dupFenId,setDupFenId]=useState(null); // Ziel-Fenster beim Duplizieren
   const[msT,setMsT]=useState("gas"); // aktive Messart im Ziffernblock (bleibt beim Blättern erhalten)
   const[showAll,setShowAll]=useState(false); // Messprofil: Raumansicht mit allen Fensterangaben statt kompakter Liste
+  const[aufIn,setAufIn]=useState(null);    // Gasmessung: Aufbau vom Gerät (null = Vorschlag unverändert)
+  const[szrSel,setSzrSel]=useState(1);      // Gasmessung 3-fach: gewählter SZR
+  const[lastAuf,setLastAuf]=useState(null); // zuletzt gemessener Aufbau {aufbau,von} – Vorschlag für gleiche Verglasungen
   const[bootMsg,setBootMsg]=useState(""); // Fortschritt beim Start (Foto-Migration)
   const[bootErr,setBootErr]=useState(null);
   const[busyMsg,setBusyMsg]=useState(""); // länger laufende Aktionen (ZIP, Import)
@@ -867,6 +875,7 @@ function App(){
 
   // Track unsaved state
   useEffect(()=>{setHasUnsaved(numVal.length>0);},[numVal]);
+  useEffect(()=>{setAufIn(null);setSzrSel(1);},[vg?.id]);   // neue Verglasung: Aufbau-Vorschlag und SZR 1
 
   const guardNav=(action)=>{
     if(hasUnsaved){setConfirmNav({action});}
@@ -1012,9 +1021,11 @@ function App(){
     if(p.modus==="verglasung"){nf={id:uid(),nr:`V${nextNr(r,"V")}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""};r.fenster.push(nf);}
   });return nf;};
 
-  const addMs=(rId,fId,vId,typ,val)=>{const T=MS_TYPES[typ]||MS_TYPES.gas;const w=parseFloat(String(val).replace(",","."));if(isNaN(w)){flash("Ungültiger Wert");return false;}
+  const addMs=(rId,fId,vId,typ,val,extra)=>{const T=MS_TYPES[typ]||MS_TYPES.gas;const w=parseFloat(String(val).replace(",","."));if(isNaN(w)){flash("Ungültiger Wert");return false;}
     if(w<T.min||w>T.max){if(!confirm(`${w} ${T.unit} liegt außerhalb des üblichen Bereichs für ${T.label} (${T.min} bis ${T.max} ${T.unit}). Trotzdem speichern?`))return false;}
-    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v){if(!v.messungen)v.messungen=[];v.messungen.push({id:uid(),typ,wert:w,zeit:new Date().toISOString()});if(v.msSkip&&v.msSkip[typ]){delete v.msSkip[typ];if(!Object.keys(v.msSkip).length)delete v.msSkip;}}});flash(`${T.label} ${w} ${T.unit} ✓`);return true;};
+    mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(v){if(!v.messungen)v.messungen=[];v.messungen.push({id:uid(),typ,wert:w,zeit:new Date().toISOString(),...(extra||{})});
+      if(extra&&extra.aufbau&&(v.data&&v.data.scheibenaufbau||"")!==extra.aufbau){v.data={...(v.data||{}),scheibenaufbau:extra.aufbau};v.sources={...(v.sources||{}),scheibenaufbau:"M"};}
+      if(v.msSkip&&v.msSkip[typ]){delete v.msSkip[typ];if(!Object.keys(v.msSkip).length)delete v.msSkip;}}});flash(`${T.label} ${w} ${T.unit}${extra&&extra.szr?" (SZR "+extra.szr+")":""} ✓`);return true;};
   // Status «nicht messbar» je Messart setzen (grund) bzw. aufheben (grund=null)
   const setSkip=(rId,fId,vId,typ,grund)=>{mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(!v)return;if(grund){v.msSkip={...(v.msSkip||{}),[typ]:{grund,zeit:new Date().toISOString()}};}else if(v.msSkip){delete v.msSkip[typ];if(!Object.keys(v.msSkip).length)delete v.msSkip;}});};
   // Messwert nach ID löschen; verknüpfte Messfotos (Metadaten + Blobs) werden mit entfernt
@@ -1074,7 +1085,7 @@ function App(){
     </div>
     <div style={$.card}><div style={$.cardT}>Kurzanleitung</div>
       <ol style={{margin:0,paddingLeft:18,fontSize:13,lineHeight:1.55}}>
-        <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und <b>Erfassungsprofil</b> wählen: Kurzaufnahme, Aufnahme, Detailaufnahme – oder für Messbegehungen Gasfüllgrad, Taupunkt, Ug-Messung. Messprofile zeigen nur ihre Messart, eine kompakte Raumliste und den Fortschritt «gemessen»; «Speichern &amp; weiter» springt zur nächsten offenen Verglasung, «nicht messbar» hält den Grund fest. Das Profil lässt sich vor jeder Begehung umschalten, Daten bleiben erhalten.</li>
+        <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und <b>Erfassungsprofil</b> wählen: Kurzaufnahme, Aufnahme, Detailaufnahme – oder für Messbegehungen Gasfüllgrad, Taupunkt, Ug-Messung. Messprofile zeigen nur ihre Messart, eine kompakte Raumliste und den Fortschritt «gemessen»; «Speichern &amp; weiter» springt zur nächsten offenen Verglasung, «nicht messbar» hält den Grund fest. Das Profil lässt sich vor jeder Begehung umschalten, Daten bleiben erhalten. <b>Gasfüllgrad:</b> Gerät wählen (Sparklike Laser Portable oder Handheld); beim Portable wird der gemessene Aufbau mitgespeichert und als Scheibenaufbau übernommen – vorgeschlagen wird der Wert der Verglasung bzw. der zuletzt gemessene; bei 3-fach-Glas je SZR ein Wert.</li>
         <li>Optional <b>Gebäudeteile/Trakte</b> in der Einrichtung anlegen. <b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren, mit <b>✎</b> umbenennen.</li>
         <li><b>Fenster</b> hinzufügen (gleichartige mit <b>⧉</b> duplizieren) und von oben nach unten erfassen: Übersichtsfoto, Lage & Aufbau (Fassade, Bauart, <b>Geometrie</b>: Vorlage wählen, Felder antippen → Öffnungsart, Bandseite, Verglasung; senkrecht/waagrecht teilen, Oberlicht/Brüstung ergänzen), Rahmen, Funktion & Zustand, Kennwerte, Bemerkungen.</li>
         <li><b>Verglasung</b> öffnen → Glasstempel (Foto + Text), Aufbau, Fotos, optional <b>Messungen</b> (Gasfüllgrad, Ug gemessen, Taupunkt – beliebig viele Werte; je Wert ein 📷 z.B. für das Display des Messgeräts), Kennwerte (Ug/g/ψ mit Standardwerten), Bemerkungen. <b>Fotos</b>: 📷 Kamera / 🖼️ Galerie; antippen zum Vergrößern.</li>
@@ -1348,7 +1359,17 @@ function App(){
 
     // Messkarte; «Speichern & weiter» springt zur nächsten nicht erledigten Verglasung des Raums
     const weiter=()=>{const j=nextOpen(all,idx,x=>vgDone(p,x.f,x.v));if(j<0){setNumVal("");setView("room");flash("Alle Verglasungen im Raum erledigt ✓");}else go(j);};
-    const msCard=()=>{const T=MS_TYPES[msTa];const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.filter(m=>msTyp(m)===t)})).filter(g=>g.list.length);const msPh=(v.photos||[]).filter(p=>p.ms).length,orphans=msOrphans(v);
+    const msCard=()=>{const T=MS_TYPES[msTa];
+      // Gas: Gerät (projektweit gemerkt), Aufbau vom Portable (Vorschlag: eigener Wert → zuletzt gemessen → Standard), SZR bei 3-fach
+      const isGas=msTa==="gas",gerK=GAS_GERAETE[p.gasGeraet]?p.gasGeraet:"portable",ger=GAS_GERAETE[gerK];
+      const eigenAuf=v.data?.scheibenaufbau||"",vorschlag=eigenAuf||(lastAuf&&lastAuf.aufbau)||getDef("scheibenaufbau",f,v)||"";
+      const aufWert=aufIn!=null?aufIn:vorschlag;
+      const aufHer=aufIn!=null?"":eigenAuf?"Wert dieser Verglasung":(lastAuf&&lastAuf.aufbau)?`zuletzt gemessen (${lastAuf.von})`:vorschlag?"Standardwert":"";
+      const dreifach=isGas&&(aufbauSzr(ger.aufbau?aufWert:eigenAuf)===2||(v.data?.verglasungsTyp||getDef("verglasungsTyp",f,v))==="3-fach WSV");
+      const szr=dreifach&&ger.dreifach?szrSel:0;
+      const kurz=f.nr+((f.verglasungen||[]).length>1?" V"+v.nr:"");
+      const speichern=val=>{let e;if(isGas){e={geraet:gerK};if(szr)e.szr=szr;if(ger.aufbau&&aufWert.trim())e.aufbau=aufWert.trim();}
+        if(!addMs(rm.id,f.id,v.id,msTa,val,e))return false;if(e&&e.aufbau){setLastAuf({aufbau:e.aufbau,von:kurz});setAufIn(null);}return true;};const ms=v.messungen||[];const groups=MS_KEYS.map(t=>({t,list:ms.filter(m=>msTyp(m)===t)})).filter(g=>g.list.length);const msPh=(v.photos||[]).filter(p=>p.ms).length,orphans=msOrphans(v);
       return <div style={$.card}>
         <div onClick={()=>{if(!mess)setShowGas(g=>!g);}} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,cursor:mess?"default":"pointer"}}>
           <div style={{...$.cardT,marginBottom:0}}>Messungen <span style={{color:C.tx3,fontWeight:400,letterSpacing:0,textTransform:"none"}}>{mess?"· "+profOf(p).name:"· optional"}</span></div>
@@ -1356,7 +1377,13 @@ function App(){
         </div>
         {(showGas||mess)&&<div style={{marginTop:12}}>
           {msKeys.length>1&&<div style={{display:"flex",gap:4,marginBottom:4}}>{msKeys.map(t=><button key={t} style={{...$.btn,...$.bS,flex:1,padding:"7px 2px",flexDirection:"column",gap:1,...(msTa===t?$.bP:$.bO)}} onClick={()=>{setMsT(t);if(!MS_TYPES[t].neg&&numVal.startsWith("-"))setNumVal(numVal.slice(1));}}><span style={{fontWeight:700}}>{MS_TYPES[t].label}</span><span style={{fontSize:10,opacity:0.8}}>{MS_TYPES[t].unit}</span></button>)}</div>}
-          <NumPad value={numVal} onChange={setNumVal} unit={T.unit} neg={!!T.neg} onSubmit={val=>addMs(rm.id,f.id,v.id,msTa,val)} onNext={mess?(val=>{if(!addMs(rm.id,f.id,v.id,msTa,val))return false;weiter();}):null}/>
+          {isGas&&<div style={{marginBottom:8}}>
+            <div style={{display:"flex",gap:4,marginBottom:6}}>{Object.entries(GAS_GERAETE).map(([k,g])=><button key={k} style={{...$.btn,...$.bS,flex:1,padding:"6px 2px",fontSize:11,...(gerK===k?$.bP:$.bO)}} onClick={()=>mut(pp=>{pp.gasGeraet=k;})}>{g.label}</button>)}</div>
+            {ger.aufbau&&<div style={{marginBottom:6}}><label style={$.lbl}>Aufbau vom Gerät [mm]</label><input style={{...$.inp,...$.inpS}} value={aufWert} onChange={e=>setAufIn(e.target.value)} placeholder="z.B. 4/16/4 oder 4/12/4/12/4"/>{aufHer&&<div style={{fontSize:10,color:C.tx3,marginTop:2}}>Vorschlag: {aufHer} – bei ersetzter Scheibe anpassen</div>}</div>}
+            {dreifach&&(ger.dreifach?<div style={{display:"flex",gap:4,marginBottom:2}}>{[1,2].map(n=><button key={n} style={{...$.btn,...$.bS,flex:1,...(szrSel===n?$.bP:$.bO)}} onClick={()=>setSzrSel(n)}>SZR {n}{msOf(v,"gas").some(m=>m.szr===n)?" ✓":""}</button>)}</div>
+              :<div style={{fontSize:11,color:C.warn}}>3-fach-Glas: Der Handheld misst nur 2-fach – Portable verwenden oder «Gerät misst nicht» wählen.</div>)}
+          </div>}
+          <NumPad value={numVal} onChange={setNumVal} unit={T.unit} neg={!!T.neg} onSubmit={val=>{const ok=speichern(val);if(ok&&szr===1)setSzrSel(2);return ok;}} onNext={mess?(val=>{if(!speichern(val))return false;if(szr===1){setSzrSel(2);return;}weiter();}):null} nextLabel={szr===1?"✓ Speichern → SZR 2":null}/>
           <div style={{fontSize:10,color:C.tx3,marginTop:6}}>Beliebig viele Werte je Messart möglich – jeder Wert wird mit Zeitstempel gespeichert. 📷 in der Wertzeile: Foto zum Messwert (z.B. Display des Messgeräts).</div>
           {mess&&(()=>{const sk=msSkipOf(v,msTa);return <div style={{marginTop:10,padding:"8px 10px",borderRadius:7,background:sk?C.warnBg:C.sf2}}>
             {sk?<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}><span style={{fontSize:12,color:C.warn,fontWeight:700}}>Nicht messbar: {sk.grund}</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setSkip(rm.id,f.id,v.id,msTa,null)}>aufheben</button></div>
@@ -1366,7 +1393,7 @@ function App(){
             <div style={{...$.cardT,marginBottom:4}}>{U.label} ({st.n}){st.n>1&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3,letterSpacing:0}}> · Ø {st.avg} · {st.min} bis {st.max} {U.unit}</span>}</div>
             {g.list.map((m,j)=>{const phs=msPhotos(v,m.id);return <div key={m.id||j} style={{padding:"5px 0",borderBottom:j<g.list.length-1?`1px solid ${C.bd}`:"none"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
-                <div style={{flex:1,minWidth:0}}><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert} {U.unit}</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>{phs.length>0&&<span style={{...$.badge,background:C.sf2,color:C.tx2,marginLeft:6,fontSize:10}}>📷 {phs.length}</span>}</div>
+                <div style={{flex:1,minWidth:0}}><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert} {U.unit}</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>{msZusatz(m)&&<span style={{fontSize:10,color:C.tx3,marginLeft:6}}>{msZusatz(m)}</span>}{phs.length>0&&<span style={{...$.badge,background:C.sf2,color:C.tx2,marginLeft:6,fontSize:10}}>📷 {phs.length}</span>}</div>
                 <PhotoBtn small onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,ms:g.t,msId:m.id})}/>
                 <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:18,padding:"2px 8px"}} onClick={()=>{if(confirm(`${U.label} ${m.wert} ${U.unit} löschen?`+(phs.length?` ${phs.length} verknüpfte(s) Foto(s) werden mitgelöscht.`:"")))delMs(rm.id,f.id,v.id,m.id);}}>×</button>
               </div>
