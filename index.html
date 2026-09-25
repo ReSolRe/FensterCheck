@@ -321,14 +321,14 @@ async function storeExistingPhoto(meta,src){const blob=src instanceof Blob?src:d
 async function photoBlob(ph){if(ph.data)return dataURLtoBlob(ph.data);const r=await phGet(ph.id);return r&&r.blob||null;}
 function photoLists(p){const out=[];(p.rooms||[]).forEach(r=>{out.push(r);(r.fenster||[]).forEach(f=>{out.push(f);(f.verglasungen||[]).forEach(v=>out.push(v));});});return out.filter(o=>Array.isArray(o.photos));}
 // Foto-IDs in einem Projekt/Raum/Fenster/Verglasungs-Teilbaum (nur Store-Fotos)
-function photoIdsIn(o){const s=[];const walk=x=>{if(!x)return;(x.photos||[]).forEach(ph=>{if(ph&&!ph.data)s.push(ph.id);});(x.rooms||[]).forEach(walk);(x.fenster||[]).forEach(walk);(x.verglasungen||[]).forEach(walk);};walk(o);return s;}
+function photoIdsIn(o){const s=[];const walk=x=>{if(!x)return;(x.photos||[]).forEach(ph=>{if(ph&&!ph.data)s.push(ph.id);});(x.docs||[]).forEach(d=>{if(d&&d.photoId)s.push(d.photoId);});(x.rooms||[]).forEach(walk);(x.fenster||[]).forEach(walk);(x.verglasungen||[]).forEach(walk);};walk(o);return s;}
 const legacyCount=p=>photoLists(p).reduce((s,o)=>s+o.photos.filter(ph=>ph&&ph.data).length,0);
 async function migratePhotos(p,onStep){for(const o of photoLists(p)){const out=[];for(const ph of o.photos){if(ph&&ph.data){try{out.push(await storeExistingPhoto(ph,ph.data));}catch(e){out.push(ph);}onStep&&onStep();}else out.push(ph);}o.photos=out;}}
 // Nicht mehr referenzierte Bild-Blobs entfernen (z.B. nach Löschen von Räumen/Fenstern)
 async function gcPhotos(projects){try{const used=new Set();projects.forEach(p=>photoIdsIn(p).forEach(id=>used.add(id)));const keys=await phKeys();await phDel(keys.filter(k=>!used.has(k)));}catch(e){}}
 
 // Gebäudeteile (Trakte): Reihenfolge aus p.trakte, ergänzt um Namen, die nur an Räumen stehen
-function traktList(p){const t=[...((p&&p.trakte)||[])];((p&&p.rooms)||[]).forEach(r=>{if(r.trakt&&!t.includes(r.trakt))t.push(r.trakt);});return t;}
+function traktList(p){const t=[...((p&&p.trakte)||[])];((p&&p.rooms)||[]).forEach(r=>{if(r.trakt&&!t.includes(r.trakt))t.push(r.trakt);});((p&&p.docs)||[]).forEach(d=>{if(d.trakt&&!t.includes(d.trakt))t.push(d.trakt);});return t;}
 // Räume für Export sortiert: Gebäudeteil → Geschoss (Reihenfolge wie in der App) → Erfassungsreihenfolge
 function sortedRooms(p){const tl=traktList(p);const ti=r=>{const i=tl.indexOf(r.trakt||"");return i<0?tl.length:i;};const fi=r=>{const i=FLOORS.indexOf(r.geschoss);return i<0?FLOORS.length:i;};
   return (p.rooms||[]).map((r,i)=>({r,i})).sort((a,b)=>ti(a.r)-ti(b.r)||fi(a.r)-fi(b.r)||a.i-b.i).map(x=>x.r);}
@@ -341,6 +341,25 @@ function photoEntries(p){const out=[];let n=0;sortedRooms(p).forEach(room=>{cons
       if(ph.ms&&MS_TYPES[ph.ms]){const T=MS_TYPES[ph.ms],m=(vg.messungen||[]).find(x=>x.id===ph.msId)||null; // Messfoto: Kurzname + Wert im Dateinamen, ohne Einheit („W/m²K" enthält „/")
         out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:"Messung "+T.label,ms:ph.ms,msId:ph.msId||"",wert:m?msLabel(m):"",name:`${fv}_Mess-${T.short}${m?"-"+fnSafe(String(m.wert)):""}_${n}.jpg`});}
       else{const t=ph.isStempel?"Stempel":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,ms:"",msId:"",wert:"",name:`${fv}_${t}_${n}.jpg`});}});});});});return out;}
+
+// Unterlagen (Pläne, Details, Datenblätter …): Seiten als Bild im photos-Store (d.photoId). Grundrisse tragen Punkte
+// (room.pos / f.pos = [{docId,x,y}]), Ansichten Fenster-Rechtecke (f.pos = [{docId,x,y,w,h}]); x/y/w/h normiert 0..1 aufs Bild
+const DOC_ARTEN={grundriss:{label:"Grundriss",plan:true},ansicht:{label:"Ansicht / Fassade",plan:true},detail:{label:"Detail / Schnitt"},datenblatt:{label:"Datenblatt"},nachweis:{label:"Energienachweis"},sonstiges:{label:"Sonstiges"}};
+const DOC_HERKUNFT={pdf:"PDF",bild:"Bild",foto:"Foto",skizze:"Skizze"};
+const isPlanDoc=d=>!!(d&&DOC_ARTEN[d.art]&&DOC_ARTEN[d.art].plan);
+function docTitle(d){if(!d)return "";if(d.name)return d.name;const a=DOC_ARTEN[d.art]?DOC_ARTEN[d.art].label:"Unterlage";
+  return [a,d.trakt,d.art==="ansicht"?(d.fassade?"Fassade "+d.fassade:""):d.geschoss].filter(Boolean).join(" · ");}
+// Reihenfolge: Grundrisse (Trakt → Geschoss), Ansichten (Trakt → Fassade), dann übrige Arten; sonst Anlagereihenfolge
+function sortedDocs(p){const ar=Object.keys(DOC_ARTEN),tl=traktList(p);const ix=(l,v)=>{const i=l.indexOf(v);return i<0?l.length:i;};
+  return ((p&&p.docs)||[]).map((d,i)=>({d,i})).sort((a,b)=>ix(ar,a.d.art)-ix(ar,b.d.art)||ix(tl,a.d.trakt||"")-ix(tl,b.d.trakt||"")||ix(FLOORS,a.d.geschoss)-ix(FLOORS,b.d.geschoss)||ix(ORIENTATIONS,a.d.fassade)-ix(ORIENTATIONS,b.d.fassade)||a.i-b.i).map(x=>x.d);}
+const posOn=(o,docId)=>((o&&o.pos)||[]).find(q=>q.docId===docId)||null;
+// Verortung setzen (q = {x,y[,w,h]}) bzw. entfernen (q = null); mutiert o
+function setPosIn(o,docId,q){const l=(o.pos||[]).filter(x=>x.docId!==docId);if(q)l.push({docId,...q});if(l.length)o.pos=l;else delete o.pos;}
+// Unterlage entfernen (mutiert p): Eintrag und alle Verortungen darauf; liefert die Bild-ID zum Löschen
+function delDocIn(p,docId){const d=(p.docs||[]).find(x=>x.id===docId);p.docs=(p.docs||[]).filter(x=>x.id!==docId);
+  (p.rooms||[]).forEach(r=>{setPosIn(r,docId,null);(r.fenster||[]).forEach(f=>setPosIn(f,docId,null));});return (d&&d.photoId)||null;}
+// Dateinamen der Unterlagen in der ZIP (Ordner «unterlagen»), nummeriert in Anzeige-Reihenfolge
+function docEntries(p){return sortedDocs(p).map((d,i)=>({doc:d,name:`${String(i+1).padStart(2,"0")}_${fnSafe(docTitle(d).replace(/\s*·\s*/g," "))||"Unterlage"}.jpg`}));}
 
 // Minimaler ZIP-Writer (unkomprimiert): Fotos werden als Blob-Referenzen eingebunden statt in den Speicher kopiert
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
@@ -387,6 +406,9 @@ async function readProjectFile(file){const head=await file.slice(0,2).text();let
   else d=JSON.parse(await file.text());
   if(!d||!d.id||!Array.isArray(d.rooms))throw new Error("keine FensterCheck-Projektdatei");
   for(const o of photoLists(d)){const out=[];for(const ph of o.photos){try{if(ph.data)out.push(await storeExistingPhoto(ph,ph.data));else if(ph.file&&files&&files.get(ph.file))out.push(await storeExistingPhoto(ph,files.get(ph.file)));}catch(e){}}o.photos=out;}
+  // Unterlagen: Bild aus der ZIP mit neuer ID speichern; ohne Bild (JSON) bleibt der Eintrag als «Bild fehlt»
+  for(const doc of (d.docs||[])){let m=null;try{if(doc.file&&files&&files.get(doc.file))m=await storeExistingPhoto({},files.get(doc.file));}catch(e){}
+    if(m){doc.photoId=m.id;doc.w=m.w;doc.h=m.h;doc.kb=m.kb;}else doc.photoId="";delete doc.file;}
   migrateProj(d);delete d._format;return d;}
 function download(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);}
 
@@ -517,15 +539,17 @@ function doExcelExport(p){const d=buildExport(p);const wb=XLSX.utils.book_new();
   XLSX.writeFile(wb,expName(p,"xlsx"));}
 const expName=(p,ext)=>`FensterCheck_${fnSafe(p.name)||"Projekt"}_${new Date().toISOString().slice(0,10)}.${ext}`;
 function doCSVExport(p){const d=buildExport(p);const csv=d.mr.map(r=>r.map(c=>{const s=String(c??"");return s.includes(";")||s.includes('"')||s.includes("\n")?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\n");download(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"}),expName(p,"csv"));}
-function stripPhotos(p){const c=JSON.parse(JSON.stringify(p));photoLists(c).forEach(o=>{o.photos=[];});return c;}
+function stripPhotos(p){const c=JSON.parse(JSON.stringify(p));photoLists(c).forEach(o=>{o.photos=[];});(c.docs||[]).forEach(d=>{d.photoId="";});return c;}
 // Nur Daten (ohne Fotos) \u2013 klein, z.B. zum Zusammenf\u00FChren zwischen Ger\u00E4ten
 function doJSONExport(p){download(new Blob([JSON.stringify(stripPhotos(p),null,1)],{type:"application/json"}),expName(p,"json").replace(/\.json$/,"_Daten.json"));}
 // ZIP mit Projektdaten (fenstercheck.json) + allen Fotos als lesbar benannte Dateien \u2013 wieder importierbar
 async function doZipExport(p,onStep){const ents=photoEntries(p);const fileOf={};ents.forEach(e=>{fileOf[e.ph.id]="fotos/"+e.name;});
   const data=JSON.parse(JSON.stringify(p));photoLists(data).forEach(o=>o.photos.forEach(ph=>{if(fileOf[ph.id])ph.file=fileOf[ph.id];delete ph.data;}));data._format="fenstercheck-zip-1";
-  const entries=[{name:"fenstercheck.json",data:JSON.stringify(data,null,1)}];let miss=0;
+  const dents=docEntries(p),dfile={};dents.forEach(e=>{dfile[e.doc.id]="unterlagen/"+e.name;});(data.docs||[]).forEach(d=>{if(dfile[d.id])d.file=dfile[d.id];});
+  const entries=[{name:"fenstercheck.json",data:JSON.stringify(data,null,1)}];let miss=0,nd=0;
   for(const e of ents){const b=await photoBlob(e.ph);if(b)entries.push({name:"fotos/"+e.name,data:b});else miss++;}
-  download(await makeZip(entries,onStep),expName(p,"zip"));return {n:ents.length-miss,miss};}
+  for(const e of dents){const r=e.doc.photoId?await phGet(e.doc.photoId):null;if(r&&r.blob){entries.push({name:"unterlagen/"+e.name,data:r.blob});nd++;}}
+  download(await makeZip(entries,onStep),expName(p,"zip"));return {n:ents.length-miss,nd,miss:miss+dents.length-nd};}
 
 // Theme
 const C={bg:"#0b0f14",sf:"#141b24",sf2:"#1c2636",bd:"#2a3648",ac:"#4da3ff",acBg:"rgba(77,163,255,0.12)",
@@ -904,8 +928,8 @@ function App(){
   // Verwaltung in der Einrichtung: wie die übrigen Einrichtungsfelder lokal, gespeichert mit "Fertig" (bzw. der nächsten Änderung)
   const trUpd=fn=>{const np=JSON.parse(JSON.stringify(projRef.current));fn(np);projRef.current=np;setProj(np);};
   const addTrakt=name=>{const n=(name||"").trim();if(!n)return;if(traktList(projRef.current).includes(n)){flash("Gebäudeteil existiert bereits");return;}trUpd(p=>{p.trakte=[...traktList(p),n];});};
-  const renTrakt=(old,name)=>{const n=(name||"").trim();if(!n||n===old)return;if(traktList(projRef.current).includes(n)){flash("Name bereits vergeben");return;}trUpd(p=>{p.trakte=traktList(p).map(t=>t===old?n:t);(p.rooms||[]).forEach(r=>{if(r.trakt===old)r.trakt=n;});});};
-  const delTrakt=t=>{const cnt=(projRef.current.rooms||[]).filter(r=>r.trakt===t).length;if(!confirm(cnt?`Gebäudeteil «${t}» entfernen? ${cnt} Raum/Räume werden «ohne Gebäudeteil» geführt (nicht gelöscht).`:`Gebäudeteil «${t}» entfernen?`))return;trUpd(p=>{(p.rooms||[]).forEach(r=>{if(r.trakt===t)r.trakt="";});p.trakte=traktList(p).filter(x=>x!==t);});};
+  const renTrakt=(old,name)=>{const n=(name||"").trim();if(!n||n===old)return;if(traktList(projRef.current).includes(n)){flash("Name bereits vergeben");return;}trUpd(p=>{p.trakte=traktList(p).map(t=>t===old?n:t);(p.rooms||[]).forEach(r=>{if(r.trakt===old)r.trakt=n;});(p.docs||[]).forEach(d=>{if(d.trakt===old)d.trakt=n;});});};
+  const delTrakt=t=>{const cnt=(projRef.current.rooms||[]).filter(r=>r.trakt===t).length;if(!confirm(cnt?`Gebäudeteil «${t}» entfernen? ${cnt} Raum/Räume werden «ohne Gebäudeteil» geführt (nicht gelöscht).`:`Gebäudeteil «${t}» entfernen?`))return;trUpd(p=>{(p.rooms||[]).forEach(r=>{if(r.trakt===t)r.trakt="";});(p.docs||[]).forEach(d=>{if(d.trakt===t)d.trakt="";});p.trakte=traktList(p).filter(x=>x!==t);});};
   const moveTrakt=(t,d)=>trUpd(p=>{const l=traktList(p);const i=l.indexOf(t),j=i+d;if(i<0||j<0||j>=l.length)return;[l[i],l[j]]=[l[j],l[i]];p.trakte=l;});
   const setRoomProps=(rId,vals)=>mut(p=>{const r=gR(p,rId);if(!r)return;Object.assign(r,vals);p.trakte=traktList(p);});
   const renFen=(rId,fId,nr)=>{const n=(nr||"").trim();if(!n)return;mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.nr=n;});};
@@ -913,8 +937,12 @@ function App(){
   // Import von ZIP (Daten + Fotos) oder JSON (auch alte Backups mit eingebetteten Fotos)
   const impFile=async(file,merge)=>{if(!file)return;setBusyMsg("Import läuft…");try{const d=await readProjectFile(file);
       if(merge&&projRef.current){const cur=projRef.current;const ids=new Set(cur.rooms.map(r=>r.id));const added=d.rooms.filter(r=>!ids.has(r.id)),skipped=d.rooms.filter(r=>ids.has(r.id));
-        phDel(skipped.flatMap(r=>photoIdsIn(r)));mut(p=>{p.rooms=[...p.rooms,...added];p.trakte=traktList(p);});
-        flash(`Zusammengeführt: ${added.length} Räume neu`+(skipped.length?`, ${skipped.length} bereits vorhanden`:""));}
+        const curD=new Map((cur.docs||[]).map(x=>[x.id,x]));const addD=(d.docs||[]).filter(x=>!curD.has(x.id));
+        const fillD=(d.docs||[]).filter(x=>curD.has(x.id)&&!curD.get(x.id).photoId&&x.photoId);   // vorhandene Unterlage ohne Bild: Bild übernehmen
+        const dropD=(d.docs||[]).filter(x=>curD.has(x.id)&&!fillD.includes(x)).map(x=>x.photoId).filter(Boolean);
+        phDel([...skipped.flatMap(r=>photoIdsIn(r)),...dropD]);
+        mut(p=>{p.rooms=[...p.rooms,...added];p.docs=[...(p.docs||[]),...addD];fillD.forEach(x=>{const t=p.docs.find(y=>y.id===x.id);if(t)Object.assign(t,{photoId:x.photoId,w:x.w,h:x.h,kb:x.kb});});p.trakte=traktList(p);});
+        flash(`Zusammengeführt: ${added.length} Räume neu`+(skipped.length?`, ${skipped.length} bereits vorhanden`:"")+(addD.length?`, ${addD.length} Unterlagen neu`:""));}
       else{d.id=uid();save(d);setView("survey");flash(`Projekt «${d.name||"Import"}» importiert`);}
     }catch(e){console.error(e);flash("Import fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");};
   const csvTrakt=r=>r.trakt||r.gebaeudeteil||r["gebäudeteil"]||r.bauteil||r.gebaeude||r["gebäude"]||"";
@@ -1002,9 +1030,9 @@ function App(){
   const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({id:uid(),nr:(f.verglasungen.length||0)+1,messungen:[],data:{},sources:{},photos:[],notizen:""});}});
   // „aus Geometrie übernehmen": fehlende Verglasungen anlegen (nie löschen), Felder in Lesereihenfolge positional zuordnen
   const syncVgFromGeo=(rId,fId)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(!f||!f.geometrie)return;const g=normalizeGeo(f.geometrie),n=geoCellCount(g);if(!f.verglasungen)f.verglasungen=[];while(f.verglasungen.length<n)f.verglasungen.push({id:uid(),nr:f.verglasungen.length+1,messungen:[],data:{},sources:{},photos:[],notizen:""});f.geometrie=geoMapLeaves(g,(l,path,i)=>({...l,vg:f.verglasungen[i].id}));});flash("Aus Geometrie übernommen");};
-  const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(f.geometrie)f.geometrie=geoRemapVg(f.geometrie,map);});return c;};
+  const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];delete c.pos;(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];delete f.pos;const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(f.geometrie)f.geometrie=geoRemapVg(f.geometrie,map);});return c;};
   const dupRoom=(rId,count)=>{mut(p=>{const idx=p.rooms.findIndex(x=>x.id===rId);if(idx<0)return;const r=p.rooms[idx];const N=Math.max(1,count|0||1);const taken=new Set(p.rooms.map(x=>x.raumnummer));const baseNm=r.raumnummer||r.raumId||"Raum";let n=2;for(let i=0;i<N;i++){const c=cloneRoomData(r);c.geschoss=r.geschoss;let nm;do{nm=`${baseNm} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.raumnummer=nm;p.rooms.splice(idx+1+i,0,c);}});flash("Raum dupliziert");};
-  const cloneFenData=f=>{const c=JSON.parse(JSON.stringify(f));c.id=uid();c.photos=[];const map={};(c.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(c.geometrie)c.geometrie=geoRemapVg(c.geometrie,map);return c;};
+  const cloneFenData=f=>{const c=JSON.parse(JSON.stringify(f));c.id=uid();c.photos=[];delete c.pos;const map={};(c.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(c.geometrie)c.geometrie=geoRemapVg(c.geometrie,map);return c;};
   const dupFen=(rId,fId,count)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const idx=r.fenster.findIndex(x=>x.id===fId);if(idx<0)return;const src=r.fenster[idx];const N=Math.max(1,count|0||1);const taken=new Set(r.fenster.map(x=>x.nr));const base=src.nr||`F${idx+1}`;let n=2;for(let i=0;i<N;i++){const c=cloneFenData(src);let nm;do{nm=`${base} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.nr=nm;r.fenster.splice(idx+1+i,0,c);}});flash("Fenster dupliziert");};
   const quickAdd=(rId,n)=>{mut(p=>{const r=gR(p,rId);if(!r)return;const s=nextNr(r,"V");for(let i=0;i<n;i++)r.fenster.push({id:uid(),nr:`V${s+i}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});});flash(`+${n}`);};
 
@@ -1040,7 +1068,7 @@ function App(){
   const addPh=(rId,fId,vId,ph)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t){if(!t.photos)t.photos=[];t.photos.push(ph);}});};
   const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});phDel([pId]);};
 
-  const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=x.kb?x.kb*1024:(x.data||"").length*0.75;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});return{rooms:(p?.rooms||[]).length,g,m,ph,mb:pb/1048576};};
+  const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=x.kb?x.kb*1024:(x.data||"").length*0.75;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});(p?.docs||[]).forEach(d=>{pb+=(d.kb||0)*1024;});return{rooms:(p?.rooms||[]).length,g,m,ph,ud:(p?.docs||[]).length,mb:pb/1048576};};
   const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgDone(proj,f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
   const isA=k=>(proj?.activeFields||[]).includes(k);
   const secFs=id=>secFields(id).filter(([k,d])=>isA(k)&&(d.t!=="zustand"||hasZ()));   // aktive Felder eines Abschnitts (inkl. Sonderfelder Zustand/Geometrie/Rahmenmaße)
@@ -1233,7 +1261,7 @@ function App(){
     <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler");}}} >📊 Excel</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doCSVExport(p);flash("CSV ✓");}}>📄 CSV</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} disabled={!!busyMsg} onClick={async()=>{setBusyMsg("ZIP wird erstellt…");try{const r=await doZipExport(p,(i,t)=>setBusyMsg(`ZIP wird erstellt… ${i}/${t}`));flash(`ZIP ✓ (${r.n} Fotos)`+(r.miss?` – ${r.miss} fehlen`:""));}catch(e){console.error(e);flash("ZIP fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");}}>📦 Sicherung: Daten + Fotos (ZIP)</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} disabled={!!busyMsg} onClick={async()=>{setBusyMsg("ZIP wird erstellt…");try{const r=await doZipExport(p,(i,t)=>setBusyMsg(`ZIP wird erstellt… ${i}/${t}`));flash(`ZIP ✓ (${r.n} Fotos${r.nd?`, ${r.nd} Unterlagen`:""})`+(r.miss?` – ${r.miss} fehlen`:""));}catch(e){console.error(e);flash("ZIP fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");}}>📦 Sicherung: Daten + Fotos (ZIP)</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p);flash("Daten ✓");}}>📃 Nur Daten (JSON)</button>
     </div><div style={{fontSize:10,color:C.tx3,marginTop:6}}>Die ZIP-Sicherung enthält alle Fotos (Ordner „fotos", lesbar benannt) und lässt sich auf jedem Gerät wieder importieren.</div></div>
     {(p.rooms||[]).length===0&&!useT?<div style={$.empty}><div style={{fontSize:38,marginBottom:8}}>🏢</div><div style={{fontWeight:700}}>Keine Räume</div><div style={{fontSize:12,marginTop:6}}>Mehrere Gebäudeteile/Trakte? In der Einrichtung (⚙) anlegen.</div></div>
