@@ -415,6 +415,20 @@ function planCandidates(p,doc,alle){const trOk=r=>!doc.trakt||(r.trakt||"")===do
   return {rooms,fenster};}
 // Passende Pläne für Raum (Grundriss: Gebäudeteil + Geschoss) bzw. Fenster (Ansicht: Gebäudeteil + Fassade)
 function plansForRoom(p,r){return sortedDocs(p).filter(d=>d.art==="grundriss"&&(!d.trakt||!r.trakt||d.trakt===r.trakt)&&(!d.geschoss||d.geschoss===r.geschoss));}
+// Fenster im Plan anlegen: Nummern-Vorschlag (Ansicht mit Fassade → «S01», sonst «F1»), +1 für Serien (S29 → S30), neues Fenster-Objekt
+const fenPrefix=doc=>doc&&doc.art==="ansicht"&&doc.fassade?doc.fassade:"F";
+const fenPad=doc=>fenPrefix(doc)==="F"?0:2;
+function nextFenNr(r,prefix,pad){let mx=0,w=pad||0;((r&&r.fenster)||[]).forEach(f=>{const s=String(f.nr||""),rest=s.slice(prefix.length);
+    if(s.startsWith(prefix)&&/^\d+$/.test(rest)){mx=Math.max(mx,+rest);w=Math.max(w,rest.length);}});return prefix+String(mx+1).padStart(w,"0");}
+function incNr(nr){const m=String(nr||"").match(/^(.*?)(\d+)$/);return m?m[1]+String(+m[2]+1).padStart(m[2].length,"0"):(nr||"F")+"2";}
+function makeFenster({nr,nVg,data,isVg}){const f={id:uid(),nr:nr||"F1",verglasungen:Array.from({length:Math.max(1,nVg|0||1)},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),
+  data:{...(data||{})},sources:{},photos:[],notizen:""};if(isVg)f.isVg=1;return f;}
+// Raum-Vorschlag für ein im Plan angelegtes Fenster: Grundriss → nächster verorteter Raum; Ansicht → Raum mit den meisten Fenstern dieser Fassade
+function suggestRoom(p,doc,x,y){const rs=p.rooms||[];
+  if(doc.art==="grundriss"){let best=null,bd=1e9;rs.forEach(r=>{const q=posOn(r,doc.id);if(!q)return;const d=Math.hypot((q.x-x)*(doc.w||1),(q.y-y)*(doc.h||1));if(d<bd){bd=d;best=r;}});
+    return best||rs.find(r=>(!doc.geschoss||r.geschoss===doc.geschoss)&&(!doc.trakt||r.trakt===doc.trakt))||rs[0]||null;}
+  let best=null,bn=0;rs.forEach(r=>{const n=(r.fenster||[]).filter(f=>doc.fassade&&f.data&&f.data.fassade===doc.fassade).length;if(n>bn){bn=n;best=r;}});
+  return best||rs.find(r=>!doc.trakt||r.trakt===doc.trakt)||rs[0]||null;}
 function plansForFen(p,r,f){const fa=(f.data&&f.data.fassade)||"";return sortedDocs(p).filter(d=>d.art==="ansicht"&&(!d.trakt||!r.trakt||d.trakt===r.trakt)&&(!d.fassade||!fa||d.fassade===fa));}
 
 // Minimaler ZIP-Writer (unkomprimiert): Fotos werden als Blob-Referenzen eingebunden statt in den Speicher kopiert
@@ -1091,6 +1105,7 @@ function App(){
   const[planId,setPlanId]=useState(null);const[planEdit,setPlanEdit]=useState(false);const[planTool,setPlanTool]=useState("nav");
   const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planRet,setPlanRet]=useState({view:"survey"});   // Rücksprung aus dem Plan: Ansicht + Raum/Fenster/Verglasung beim ersten Öffnen
   const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[planNew,setPlanNew]=useState(null);
+  const[planSerie,setPlanSerie]=useState(null);   // Serienmodus beim Anlegen im Plan {rId,lastNr,nVg}
   const[fromPlan,setFromPlan]=useState(false);   // Raum/Messung aus dem Plan geöffnet → Rücksprung «← Plan»
   const[bootMsg,setBootMsg]=useState(""); // Fortschritt beim Start (Foto-Migration)
   const[bootErr,setBootErr]=useState(null);
@@ -1159,7 +1174,7 @@ function App(){
   // Plan öffnen: opts {focus:{x,y}, edit, sel:{kind,rId,fId,label}}
   const openPlan=(docId,opts)=>{const o=opts||{};const d=((projRef.current&&projRef.current.docs)||[]).find(x=>x.id===docId);
     setPlanId(docId);setPlanFocus(o.focus||null);setPlanEdit(!!o.edit);setPlanSel(o.sel||null);setPlanTool(o.edit?(d&&d.art==="ansicht"?"rechteck":"punkt"):"nav");
-    setPlanAlle(false);setPlanMenu(null);
+    setPlanAlle(false);setPlanMenu(null);setPlanSerie(null);
     // Ausgangspunkt nur merken, wenn der Plan nicht aus einem vom Plan geöffneten Raum/Messung kommt (sonst Kreis Plan ↔ Raum)
     if(!(fromPlan&&(view==="room"||view==="measure"))&&view!=="plan")setPlanRet({view:o.from||view,rId:room?.id,fId:fen?.id,vId:vg?.id});setView("plan");};
   // «← Zurück» im Plan: zum Ausgangspunkt (Raum/Messung wiederherstellen), Plan-Kreis beenden
@@ -1167,6 +1182,11 @@ function App(){
     if(r.view==="room"||r.view==="measure"){const rm=p&&gR(p,r.rId);if(!rm){setView("survey");return;}setRoom(rm);
       if(r.view==="measure"){const f=gF(rm,r.fId),v=f&&gV(f,r.vId);if(f&&v){setFen(f);setVg(v);setNumVal("");setView("measure");return;}}setView("room");return;}
     setView(["docs","setup","survey","home"].includes(r.view)?r.view:"survey");};
+  // Fenster im Plan anlegen (optional mit neuem Raum) und gleich verorten; liefert {rId,nr}
+  const createFenAt=(docId,q,o)=>{let res=null;mut(p=>{let r=o.rId&&gR(p,o.rId);
+      if(!r&&o.newRoom){r={id:uid(),trakt:o.newRoom.trakt||"",geschoss:o.newRoom.geschoss||"EG",raumnummer:o.newRoom.raumnummer,raumId:"",fenster:[],photos:[]};p.rooms.push(r);p.trakte=traktList(p);}
+      if(!r)return;const f=p.modus==="verglasung"?makeFenster({nr:`V${nextNr(r,"V")}`,nVg:1,isVg:true}):makeFenster({nr:o.nr,nVg:o.nVg,data:o.fassade?{fassade:o.fassade}:{}});
+      setPosIn(f,docId,q);(r.fenster=r.fenster||[]).push(f);res={rId:r.id,nr:f.nr};});return res;};
   const setPos=(kind,rId,fId,docId,q)=>mut(p=>{const r=gR(p,rId);if(!r)return;const o=kind==="room"?r:gF(r,fId);if(o)setPosIn(o,docId,q);});
   // Raum bzw. Fenster aus dem Plan öffnen (Fenster: erste noch offene Verglasung)
   const openFromPlan=m=>{const p=projRef.current;const r=gR(p,m.rId);if(!r)return;setFromPlan(true);setRoom(r);
@@ -1366,7 +1386,7 @@ function App(){
       <ol style={{margin:0,paddingLeft:18,fontSize:13,lineHeight:1.55}}>
         <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und <b>Erfassungsprofil</b> wählen: Kurzaufnahme, Aufnahme, Detailaufnahme – oder für Messbegehungen Gasfüllgrad, Taupunkt, Ug-Messung. Messprofile zeigen nur ihre Messart, eine kompakte Raumliste und den Fortschritt «gemessen»; «Speichern &amp; weiter» springt zur nächsten offenen Verglasung, «nicht messbar» hält den Grund fest. Das Profil lässt sich vor jeder Begehung umschalten, Daten bleiben erhalten. <b>Gasfüllgrad:</b> Gerät wählen (Sparklike Laser Portable oder Handheld); beim Portable wird der gemessene Aufbau mitgespeichert und als Scheibenaufbau übernommen – vorgeschlagen wird der Wert der Verglasung bzw. der zuletzt gemessene; bei 3-fach-Glas je SZR ein Wert.</li>
         <li>Optional <b>Gebäudeteile/Trakte</b> in der Einrichtung anlegen. <b>Räume</b> anlegen oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren, mit <b>✎</b> umbenennen.</li>
-        <li><b>Pläne &amp; Unterlagen</b> (🗺 in der Raumliste): Grundrisse, Ansichten, Fassadenfotos, Handskizzen, Detailschnitte, Datenblätter, Energienachweise importieren – PDF am PC (Seite wählen, <b>zuschneiden</b>, drehen), Bilder und Fotos auch am Handy. Im Plan mit <b>✎ Verorten</b> Räume (Punkt) und Fenster (Punkt im Grundriss, Rechteck in der Ansicht) setzen; die Auswahl springt dabei zum nächsten Eintrag. Danach Marker antippen → Raum bzw. Messung; die Farben zeigen den Fortschritt des Profils. „🗺" an Raum, Fenster und Messung zeigt die Stelle im Plan.</li>
+        <li><b>Pläne &amp; Unterlagen</b> (🗺 in der Raumliste): Grundrisse, Ansichten, Fassadenfotos, Handskizzen, Detailschnitte, Datenblätter, Energienachweise importieren – PDF am PC (Seite wählen, <b>zuschneiden</b>, drehen), Bilder und Fotos auch am Handy. Im Plan mit <b>✎ Verorten</b> Räume (Punkt) und Fenster (Punkt im Grundriss, Rechteck in der Ansicht) setzen; die Auswahl springt dabei zum nächsten Eintrag. Ohne Auswahl legt ein Rechteck (Ansicht) bzw. ein Tipp ins Leere (Grundriss) ein <b>neues Fenster</b> oder einen neuen Raum an – mit <b>Serie</b> jedes weitere gleich als nächste Nummer (S01, S02, …). Danach Marker antippen → Raum bzw. Messung; die Farben zeigen den Fortschritt des Profils. „🗺" an Raum, Fenster und Messung zeigt die Stelle im Plan.</li>
         <li><b>Fenster</b> hinzufügen (gleichartige mit <b>⧉</b> duplizieren) und von oben nach unten erfassen: Übersichtsfoto, Lage & Aufbau (Fassade, Bauart, <b>Geometrie</b>: Vorlage wählen, Felder antippen → Öffnungsart, Bandseite, Verglasung; senkrecht/waagrecht teilen, Oberlicht/Brüstung ergänzen), Rahmen, Funktion & Zustand, Kennwerte, Bemerkungen.</li>
         <li><b>Verglasung</b> öffnen → Glasstempel (Foto + Text), Aufbau, Fotos, optional <b>Messungen</b> (Gasfüllgrad, Ug gemessen, Taupunkt – beliebig viele Werte; je Wert ein 📷 z.B. für das Display des Messgeräts), Kennwerte (Ug/g/ψ mit Standardwerten), Bemerkungen. <b>Fotos</b>: 📷 Kamera / 🖼️ Galerie; antippen zum Vergrößern.</li>
         <li><b>Thermische Standardwerte</b> global oder pro Projekt unter <b>⚙ Einstellungen</b> anpassen.</li>
@@ -1408,21 +1428,27 @@ function App(){
       const nextC=nx.find((c,j)=>candList.indexOf(c)>i)||nx[0]||null;setPlanSel(nextC);if(!nextC)flash("Alle verortet ✓");};
     const place=q=>{if(!planSel)return;setPos(planSel.kind,planSel.rId,planSel.fId,doc.id,q);const was=markers.some(m=>m.key===selKey);flash(`${planSel.label} ${was?"verschoben":"verortet"}`);
       if(was)setPlanSel(null);else advance();};
+    // Neues Fenster/neuer Raum an der Stelle q (Punkt oder Rechteck); Serie: direkt das nächste Fenster ohne Rückfrage
+    const openNew=(q,kind)=>{const r=suggestRoom(p,doc,q.x+(q.w||0)/2,q.y+(q.h||0)/2);
+      setPlanNew({...q,kind,raumnummer:"",raumId:"",rId:r?r.id:"",nr:r?nextFenNr(r,fenPrefix(doc),fenPad(doc)):fenPrefix(doc)+(fenPad(doc)?"01":"1"),nVg:1,serie:false,nrRaum:"",geschoss:doc.geschoss||"EG"});};
+    const serieAt=q=>{const s=planSerie,r=gR(p,s.rId);if(!r){setPlanSerie(null);return;}let nr=incNr(s.lastNr);while((r.fenster||[]).some(f=>f.nr===nr))nr=incNr(nr);
+      const res=createFenAt(doc.id,q,{rId:s.rId,nr,nVg:s.nVg,fassade:isG?"":doc.fassade||""});if(res){setPlanSerie({...s,lastNr:res.nr});flash(`Fenster ${res.nr} angelegt`);}};
     const tapEmpty=(x,y)=>{if(!planEdit)return;if(planSel){if(planTool==="punkt"){place({x,y});return;}if(planTool==="rechteck"){flash("Rechteck aufziehen");return;}}
-      if(isG&&planTool!=="nav")setPlanNew({x,y,raumnummer:"",raumId:""});};
+      if(planTool==="nav")return;if(planSerie&&planTool==="punkt"){serieAt({x,y});return;}
+      if(isG)openNew({x,y},markers.some(m=>m.kind==="room")?"fenster":"raum");else flash("Rechteck aufziehen, um ein Fenster anzulegen");};
     const tapMarker=m=>{if(planEdit)setPlanMenu(m);else openFromPlan(m);};
     const nDone=markers.filter(m=>m.st===2).length,prof=profOf(p),mess=profMess(p);
     const tb={...$.btn,...$.bS,padding:"5px 10px"};
     return <div className="app" style={{...$.app,height:"100dvh",minHeight:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       <div style={$.hdr}><button style={$.hdrB} onClick={planBack}>← Zurück</button>
-        {plans.length>1?<select style={{...$.sel,...$.selS,flex:1,minWidth:0,fontWeight:700}} value={doc.id} onChange={e=>{setPlanId(e.target.value);setPlanFocus(null);setPlanSel(null);setPlanTool(planEdit?(plans.find(d=>d.id===e.target.value)?.art==="ansicht"?"rechteck":"punkt"):"nav");}}>{plans.map(d=><option key={d.id} value={d.id}>{docTitle(d)}</option>)}</select>
+        {plans.length>1?<select style={{...$.sel,...$.selS,flex:1,minWidth:0,fontWeight:700}} value={doc.id} onChange={e=>{setPlanId(e.target.value);setPlanFocus(null);setPlanSel(null);setPlanSerie(null);setPlanTool(planEdit?(plans.find(d=>d.id===e.target.value)?.art==="ansicht"?"rechteck":"punkt"):"nav");}}>{plans.map(d=><option key={d.id} value={d.id}>{docTitle(d)}</option>)}</select>
         :<div style={$.hdrT}>{docTitle(doc)}</div>}
-        <button style={{...$.hdrB,color:planEdit?C.ok:C.ac}} onClick={()=>{const e=!planEdit;setPlanEdit(e);setPlanSel(null);setPlanMenu(null);setPlanTool(e?(isG?"punkt":"rechteck"):"nav");}}>{planEdit?"✓ Fertig":"✎ Verorten"}</button></div>
+        <button style={{...$.hdrB,color:planEdit?C.ok:C.ac}} onClick={()=>{const e=!planEdit;setPlanEdit(e);setPlanSel(null);setPlanMenu(null);setPlanSerie(null);setPlanTool(e?(isG?"punkt":"rechteck"):"nav");}}>{planEdit?"✓ Fertig":"✎ Verorten"}</button></div>
       <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",fontSize:11,color:C.tx2,flexWrap:"wrap",borderBottom:`1px solid ${C.bd}`}}>
         {[["0","offen"],["1","teilweise"],["2",mess?"gemessen":"erfasst"]].map(([k,l])=><span key={k} style={{display:"inline-flex",alignItems:"center",gap:4}}><span style={{width:10,height:10,borderRadius:5,background:ST_COL[k],display:"inline-block"}}/>{l}</span>)}
         <span style={{marginLeft:"auto"}}>{markers.length?`${nDone}/${markers.length} ${mess?"gemessen":"erledigt"}`:"noch nichts verortet"}{prof?` · ${prof.name}`:""}</span></div>
       <div style={{flex:1,minHeight:0,position:"relative"}}>
-        <PlanView doc={doc} markers={markers} mode={planEdit?planTool:"nav"} focus={planFocus} onTapMarker={tapMarker} onTapEmpty={tapEmpty} onRect={q=>{if(!planSel){flash("Zuerst ein Fenster aus der Liste wählen");return;}place(q);}}/>
+        <PlanView doc={doc} markers={markers} mode={planEdit?planTool:"nav"} focus={planFocus} onTapMarker={tapMarker} onTapEmpty={tapEmpty} onRect={q=>{if(planSel){place(q);return;}if(planSerie){serieAt(q);return;}openNew(q,"fenster");}}/>
         {!planEdit&&!markers.length&&<div style={{position:"absolute",left:10,right:60,top:10,background:"rgba(20,27,36,0.9)",color:C.tx,borderRadius:8,padding:"8px 10px",fontSize:12}}>Noch nichts verortet – «✎ Verorten» oben rechts: {isG?"Räume und Fenster antippen und in den Plan tippen.":"Fenster wählen und als Rechteck aufziehen."}</div>}
       </div>
       {planEdit&&<div style={{maxHeight:"38vh",overflowY:"auto",padding:"8px 12px 12px",borderTop:`1px solid ${C.bd}`,background:C.sf}}>
@@ -1431,8 +1457,9 @@ function App(){
           <button style={{...tb,...(planTool==="punkt"?$.bP:$.bO)}} onClick={()=>setPlanTool("punkt")}>● Punkt</button>
           {!isG&&<button style={{...tb,...(planTool==="rechteck"?$.bP:$.bO)}} onClick={()=>setPlanTool("rechteck")}>▭ Rechteck</button>}
           <label style={{fontSize:11,color:C.tx2,display:"inline-flex",alignItems:"center",gap:4,marginLeft:"auto",cursor:"pointer"}}><input type="checkbox" checked={planAlle} onChange={e=>setPlanAlle(e.target.checked)}/>alle {isG?"Räume":"Fenster"}</label></div>
+        {planSerie&&!planSel&&<div style={{fontSize:12,color:C.ok,marginBottom:6}}>Serie: jedes {isG?"Tippen":"Rechteck"} legt ein neues Fenster an – nächstes <b>{incNr(planSerie.lastNr)}</b> in {(gR(p,planSerie.rId)||{}).raumnummer||"?"} <button style={{...tb,...$.bO,padding:"2px 8px",marginLeft:6}} onClick={()=>setPlanSerie(null)}>beenden</button></div>}
         {planSel?<div style={{fontSize:12,color:C.ac,marginBottom:6}}>Ausgewählt: <b>{planSel.label}</b> – {planTool==="rechteck"?"Rechteck über das Fenster aufziehen":planTool==="punkt"?"in den Plan tippen":"Werkzeug wählen"} <button style={{...tb,...$.bO,padding:"2px 8px",marginLeft:6}} onClick={()=>setPlanSel(null)}>✕</button></div>
-          :<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>{rest?`Nicht verortet (${rest}) – antippen und ${isG?"in den Plan tippen":"Rechteck aufziehen"}; die Auswahl springt danach zum nächsten Eintrag.`:"Alles verortet ✓"}{isG?" Tippen ins Leere legt einen neuen Raum an.":""}{isG||doc.fassade?"":" Tipp: Fassade der Ansicht angeben (🗺 → ✎), dann werden nur passende Fenster gezeigt."}</div>}
+          :<div style={{fontSize:11,color:C.tx2,marginBottom:6}}>{rest?`Nicht verortet (${rest}) – antippen und ${isG?"in den Plan tippen":"Rechteck aufziehen"}; die Auswahl springt danach zum nächsten Eintrag.`:"Alles verortet ✓"}{isG?" Tippen ins Leere (ohne Auswahl) legt einen neuen Raum oder ein neues Fenster an.":" Rechteck ohne Auswahl legt ein neues Fenster an."}{isG||doc.fassade?"":" Tipp: Fassade der Ansicht angeben (🗺 → ✎), dann werden nur passende Fenster gezeigt."}</div>}
         <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{candList.map(c=>{const on=planSel&&c.kind===planSel.kind&&(c.kind==="room"?c.rId===planSel.rId:c.fId===planSel.fId);
           return <button key={c.kind+(c.fId||c.rId)} style={{...tb,padding:"5px 9px",...(on?$.bP:$.bO)}} onClick={()=>pick(c)}>{c.kind==="room"?"● ":"▭ "}{c.label}{c.sub&&c.kind==="fen"?<span style={{fontSize:10,opacity:0.7,marginLeft:4}}>{c.sub}</span>:null}</button>;})}</div>
       </div>}
@@ -1441,12 +1468,32 @@ function App(){
           <button style={{...$.btn,...$.bP}} onClick={()=>{const m=planMenu;setPlanMenu(null);openFromPlan(m);}}>Öffnen</button>
           <button style={{...$.btn,...$.bO}} onClick={()=>{const m=planMenu;setPlanMenu(null);setPlanSel({kind:m.kind,rId:m.rId,fId:m.fId,label:m.label});setPlanTool(m.w?"rechteck":"punkt");flash(m.w?"Neues Rechteck aufziehen":"Neue Stelle antippen");}}>Verschieben</button>
           <button style={{...$.btn,...$.bO,color:C.err}} onClick={()=>{const m=planMenu;setPlanMenu(null);setPos(m.kind,m.rId,m.fId,doc.id,null);flash("Verortung entfernt");}}>Verortung entfernen</button></div></div></div>}
-      {planNew&&<div style={$.modal} onClick={()=>setPlanNew(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Raum hier anlegen</div>
-        <div style={{fontSize:12,color:C.tx2,marginBottom:10}}>{[doc.trakt,doc.geschoss].filter(Boolean).join(" · ")||"Gebäudeteil/Geschoss aus dem Plan"}</div>
-        <div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} autoFocus value={planNew.raumnummer} onChange={e=>setPlanNew({...planNew,raumnummer:e.target.value})} placeholder="z.B. O.02 Schuh-Werkstatt"/></div>
-        <div style={{marginBottom:12}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={planNew.raumId} onChange={e=>setPlanNew({...planNew,raumId:e.target.value})}/></div>
-        <button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{const n=planNew;if(!n.raumnummer.trim()&&!n.raumId.trim()){flash("Bezeichnung angeben");return;}
-          mut(pp=>{pp.rooms.push({id:uid(),trakt:doc.trakt||"",geschoss:doc.geschoss||"EG",raumnummer:n.raumnummer.trim(),raumId:n.raumId.trim(),fenster:[],photos:[],pos:[{docId:doc.id,x:n.x,y:n.y}]});pp.trakte=traktList(pp);});setPlanNew(null);flash("Raum angelegt und verortet");}}>Anlegen</button></div></div>}
+      {planNew&&(()=>{const n=planNew,upd=o=>setPlanNew({...n,...o}),isF=n.kind==="fenster",rooms=sortedRooms(p);
+        const sug=rid=>{const r=rid&&gR(p,rid);return r?nextFenNr(r,fenPrefix(doc),fenPad(doc)):fenPrefix(doc)+(fenPad(doc)?"01":"1");};
+        const save=()=>{if(!isF){if(!n.raumnummer.trim()&&!n.raumId.trim()){flash("Bezeichnung angeben");return;}
+            mut(pp=>{pp.rooms.push({id:uid(),trakt:doc.trakt||"",geschoss:doc.geschoss||"EG",raumnummer:n.raumnummer.trim(),raumId:n.raumId.trim(),fenster:[],photos:[],pos:[{docId:doc.id,x:n.x,y:n.y}]});pp.trakte=traktList(pp);});setPlanNew(null);flash("Raum angelegt und verortet");return;}
+          if(!n.rId&&!n.nrRaum.trim()){flash("Raum wählen oder neuen Raum benennen");return;}
+          const q=n.w!=null?{x:n.x,y:n.y,w:n.w,h:n.h}:{x:n.x,y:n.y};
+          const res=createFenAt(doc.id,q,{rId:n.rId,newRoom:n.rId?null:{raumnummer:n.nrRaum.trim(),geschoss:n.geschoss,trakt:doc.trakt||""},nr:(n.nr||"").trim()||sug(n.rId),nVg:n.nVg,fassade:isG?"":doc.fassade||""});
+          setPlanNew(null);if(!res)return;flash(`Fenster ${res.nr} angelegt und verortet`);if(n.serie)setPlanSerie({rId:res.rId,lastNr:res.nr,nVg:n.nVg});};
+        return <div style={$.modal} onClick={()=>setPlanNew(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/>
+          <div style={{fontWeight:800,fontSize:16,marginBottom:8}}>{isG?"Hier anlegen":"Fenster anlegen"}</div>
+          {isG&&<div style={{display:"flex",gap:6,marginBottom:10}}>{[["raum","Raum"],["fenster","Fenster"]].map(([k,l])=><button key={k} style={{...$.btn,...$.bS,flex:1,...(n.kind===k?$.bP:$.bO)}} onClick={()=>upd({kind:k})}>{l}</button>)}</div>}
+          {!isF?<>
+            <div style={{fontSize:12,color:C.tx2,marginBottom:10}}>{[doc.trakt,doc.geschoss].filter(Boolean).join(" · ")||"Gebäudeteil/Geschoss aus dem Plan"}</div>
+            <div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} autoFocus value={n.raumnummer} onChange={e=>upd({raumnummer:e.target.value})} placeholder="z.B. O.02 Schuh-Werkstatt"/></div>
+            <div style={{marginBottom:12}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={n.raumId} onChange={e=>upd({raumId:e.target.value})}/></div></>
+          :<>
+            <div style={{marginBottom:8}}><label style={$.lbl}>Raum</label><select style={$.sel} value={n.rId||"__neu"} onChange={e=>{const v=e.target.value;upd(v==="__neu"?{rId:"",nr:sug("")}:{rId:v,nr:sug(v)});}}>
+              {rooms.map(r=><option key={r.id} value={r.id}>{(r.raumnummer||r.raumId||"Raum")+" · "+r.geschoss+(r.trakt?" · "+r.trakt:"")}</option>)}<option value="__neu">+ Neuer Raum…</option></select></div>
+            {!n.rId&&<div style={{display:"flex",gap:8,marginBottom:8}}><div style={{flex:2}}><label style={$.lbl}>Neuer Raum</label><input style={$.inp} autoFocus value={n.nrRaum} onChange={e=>upd({nrRaum:e.target.value})} placeholder="z.B. Foyer Süd"/></div>
+              <div style={{flex:1}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={n.geschoss} onChange={e=>upd({geschoss:e.target.value})}>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div></div>}
+            {p.modus!=="verglasung"&&<div style={{display:"flex",gap:8,marginBottom:8}}>
+              <div style={{flex:1}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={n.nr} onChange={e=>upd({nr:e.target.value})}/></div>
+              <div style={{flex:1.3}}><label style={$.lbl}>Verglasungen</label><div style={{display:"flex",gap:4}}>{[1,2,3,4].map(k=><button key={k} style={{...$.btn,...$.bS,flex:1,padding:"9px 0",...(n.nVg===k?$.bP:$.bO)}} onClick={()=>upd({nVg:k})}>{k}</button>)}</div></div></div>}
+            {!isG&&doc.fassade&&<div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Fassade {doc.fassade} wird übernommen.</div>}
+            <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:13,marginBottom:12,cursor:"pointer"}}><input type="checkbox" checked={n.serie} onChange={e=>upd({serie:e.target.checked})} style={{marginTop:3}}/><span>Serie: weitere {isG?"Tipps":"Rechtecke"} legen direkt das nächste Fenster an (Nr. +1, gleicher Raum)</span></label></>}
+          <button style={{...$.btn,...$.bP,...$.bBl}} onClick={save}>Anlegen</button></div></div>;})()}
       {Toast}</div>;}
 
   if(view==="docs"){const p=proj;if(!p){setView("home");return null;}const ds=sortedDocs(p),tl=traktList(p);const plans=ds.filter(isPlanDoc),other=ds.filter(d=>!isPlanDoc(d));
