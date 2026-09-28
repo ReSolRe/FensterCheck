@@ -1089,7 +1089,7 @@ function App(){
   const docFileRef=useRef(),docCamRef=useRef();
   // Plan-Ansicht: gewählte Unterlage, Bearbeiten-Modus, Werkzeug (nav|punkt|rechteck), Auswahl zum Verorten, Fokus, Rücksprung
   const[planId,setPlanId]=useState(null);const[planEdit,setPlanEdit]=useState(false);const[planTool,setPlanTool]=useState("nav");
-  const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planFrom,setPlanFrom]=useState("survey");
+  const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planRet,setPlanRet]=useState({view:"survey"});   // Rücksprung aus dem Plan: Ansicht + Raum/Fenster/Verglasung beim ersten Öffnen
   const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[planNew,setPlanNew]=useState(null);
   const[fromPlan,setFromPlan]=useState(false);   // Raum/Messung aus dem Plan geöffnet → Rücksprung «← Plan»
   const[bootMsg,setBootMsg]=useState(""); // Fortschritt beim Start (Foto-Migration)
@@ -1159,7 +1159,14 @@ function App(){
   // Plan öffnen: opts {focus:{x,y}, edit, sel:{kind,rId,fId,label}}
   const openPlan=(docId,opts)=>{const o=opts||{};const d=((projRef.current&&projRef.current.docs)||[]).find(x=>x.id===docId);
     setPlanId(docId);setPlanFocus(o.focus||null);setPlanEdit(!!o.edit);setPlanSel(o.sel||null);setPlanTool(o.edit?(d&&d.art==="ansicht"?"rechteck":"punkt"):"nav");
-    setPlanAlle(false);setPlanMenu(null);setPlanFrom(o.from||view);setView("plan");};
+    setPlanAlle(false);setPlanMenu(null);
+    // Ausgangspunkt nur merken, wenn der Plan nicht aus einem vom Plan geöffneten Raum/Messung kommt (sonst Kreis Plan ↔ Raum)
+    if(!(fromPlan&&(view==="room"||view==="measure"))&&view!=="plan")setPlanRet({view:o.from||view,rId:room?.id,fId:fen?.id,vId:vg?.id});setView("plan");};
+  // «← Zurück» im Plan: zum Ausgangspunkt (Raum/Messung wiederherstellen), Plan-Kreis beenden
+  const planBack=()=>{const r=planRet||{view:"survey"},p=projRef.current;setFromPlan(false);setPlanMenu(null);
+    if(r.view==="room"||r.view==="measure"){const rm=p&&gR(p,r.rId);if(!rm){setView("survey");return;}setRoom(rm);
+      if(r.view==="measure"){const f=gF(rm,r.fId),v=f&&gV(f,r.vId);if(f&&v){setFen(f);setVg(v);setNumVal("");setView("measure");return;}}setView("room");return;}
+    setView(["docs","setup","survey","home"].includes(r.view)?r.view:"survey");};
   const setPos=(kind,rId,fId,docId,q)=>mut(p=>{const r=gR(p,rId);if(!r)return;const o=kind==="room"?r:gF(r,fId);if(o)setPosIn(o,docId,q);});
   // Raum bzw. Fenster aus dem Plan öffnen (Fenster: erste noch offene Verglasung)
   const openFromPlan=m=>{const p=projRef.current;const r=gR(p,m.rId);if(!r)return;setFromPlan(true);setRoom(r);
@@ -1402,7 +1409,7 @@ function App(){
     const nDone=markers.filter(m=>m.st===2).length,prof=profOf(p),mess=profMess(p);
     const tb={...$.btn,...$.bS,padding:"5px 10px"};
     return <div className="app" style={{...$.app,height:"100dvh",minHeight:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-      <div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(planFrom==="plan"?"survey":planFrom||"survey")}>← Zurück</button>
+      <div style={$.hdr}><button style={$.hdrB} onClick={planBack}>← Zurück</button>
         {plans.length>1?<select style={{...$.sel,...$.selS,flex:1,minWidth:0,fontWeight:700}} value={doc.id} onChange={e=>{setPlanId(e.target.value);setPlanFocus(null);setPlanSel(null);setPlanTool(planEdit?(plans.find(d=>d.id===e.target.value)?.art==="ansicht"?"rechteck":"punkt"):"nav");}}>{plans.map(d=><option key={d.id} value={d.id}>{docTitle(d)}</option>)}</select>
         :<div style={$.hdrT}>{docTitle(doc)}</div>}
         <button style={{...$.hdrB,color:planEdit?C.ok:C.ac}} onClick={()=>{const e=!planEdit;setPlanEdit(e);setPlanSel(null);setPlanMenu(null);setPlanTool(e?(isG?"punkt":"rechteck"):"nav");}}>{planEdit?"✓ Fertig":"✎ Verorten"}</button></div>
