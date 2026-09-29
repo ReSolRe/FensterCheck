@@ -519,8 +519,13 @@ function msStats(list){const w=list.map(m=>m.wert).filter(x=>typeof x==="number"
   return {n:w.length,avg:r(w.reduce((a,b)=>a+b,0)/w.length),min:s[0],max:s[s.length-1],med:r(s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2)};}
 // Eine Verglasung gilt als "erfasst", wenn an ihr vor Ort gearbeitet wurde – Messung, Foto oder Daten an der Verglasung,
 // Foto oder Rahmenzustand am Fenster. Die Fenster-Daten zählen bewusst NICHT: sie sind oft aus Plänen vorbelegt (Fassade,
-// Bauart, Maße) und würden sonst alle Verglasungen des Fensters von Anfang an als erledigt zeigen.
-const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.values(v?.data||{}).some(x=>x&&(""+x).trim())||((f?.photos||[]).length>0)||!!f?.zustandRahmen;
+// Bauart, Maße) und würden sonst alle Verglasungen des Fensters von Anfang an als erledigt zeigen. Ebenso zählen Angaben
+// an der Verglasung mit Quelle «P» (Planungsdaten, z.B. aus der Fensterliste vorbelegt) nicht.
+const vgErf=(f,v)=>(v?.messungen?.length>0)||((v?.photos||[]).length>0)||Object.entries(v?.data||{}).some(([k,x])=>x&&(""+x).trim()&&(v.sources||{})[k]!=="P")||((f?.photos||[]).length>0)||!!f?.zustandRahmen;
+// Feldwert setzen (mutiert t = Fenster/Verglasung). Ein geänderter Planungswert (Quelle «P») ist danach kein Planungswert
+// mehr – die Quelle P entfällt, der Wert zählt als vor Ort erfasst.
+function setDataVal(t,k,val){if(!t.data)t.data={};const old=t.data[k];t.data[k]=val;
+  if(t.sources&&t.sources[k]==="P"&&String(old==null?"":old)!==String(val==null?"":val))delete t.sources[k];}
 // Fortschritt: im Messprofil «gemessen» (Wert oder «nicht messbar» für die Messart des Profils), sonst «dokumentiert»
 const vgDone=(p,f,v)=>profMess(p)?vgGemessen(p,v):vgErf(f,v);
 // Export-Spalten: aktive Felder plus alle Felder mit Daten oder Standardwert – ein Profilwechsel nimmt keine Werte aus dem Export
@@ -1341,7 +1346,7 @@ function App(){
   // Messwert nach ID löschen; verknüpfte Messfotos (Metadaten + Blobs) werden mit entfernt
   const delMs=(rId,fId,vId,mId)=>{if(!mId)return;const phs=msPhotos(gV(gF(gR(projRef.current,rId),fId),vId),mId).map(x=>x.id);
     mut(p=>{const v=gV(gF(gR(p,rId),fId),vId);if(!v)return;v.messungen=(v.messungen||[]).filter(m=>m.id!==mId);if(phs.length)v.photos=(v.photos||[]).filter(x=>x.msId!==mId);});if(phs.length)phDel(phs);};
-  const setFV=(rId,fId,vId,k,val)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.data)t.data={};t.data[k]=val;}});};
+  const setFV=(rId,fId,vId,k,val)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t)setDataVal(t,k,val);});};
   const setFS=(rId,fId,vId,k,s)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t){if(!t.sources)t.sources={};t.sources[k]=s;}});};
   const setZu=(rId,fId,v)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(f)f.zustandRahmen=v;});};
   const setNotiz=(rId,fId,vId,txt)=>{mut(p=>{const t=vId?gV(gF(gR(p,rId),fId),vId):gF(gR(p,rId),fId);if(t)t.notizen=txt;});};   // Bemerkung an Fenster (vId leer) oder Verglasung
