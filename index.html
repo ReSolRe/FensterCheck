@@ -283,6 +283,7 @@ function typAssign(f,t,o){o=o||{};f.typ=t.id;const set=[];
 // Neuer Typ aus einem Fenster (Aufbau ohne Verknüpfungen, Konstruktionsangaben samt Quelle, Rahmenmaße)
 function typFromFen(f,o){o=o||{};const data={},sources={};TYP_FIELDS.forEach(k=>{const v=_sv((f.data||{})[k]);if(v){data[k]=v;if((f.sources||{})[k])sources[k]=f.sources[k];}});
   return typNorm({kurz:o.kurz||"",name:o.name||"",geometrie:f.geometrie||newGeo(),data,sources,rahmenmasse:f.rahmenmasse||{}});}
+function nextTypKurz(p){let mx=0;((p&&p.typen)||[]).forEach(t=>{const m=/^T(\d+)$/i.exec(_sv(t.kurz));if(m)mx=Math.max(mx,+m[1]);});return "T"+String(mx+1).padStart(2,"0");}
 // Nummernstamm vor «-» bzw. Leerzeichen, nur mit Ziffer (FE09-E.01 → FE09; F1, S01 → keiner)
 function typStem(nr){const m=String(nr||"").trim().match(/^([^-\s]+)[-\s]/);return m&&/\d/.test(m[1])?m[1]:"";}
 // Vorschläge: Fenster ohne Typ je Nummernstamm; Aufteilung = häufigster Aufbau, Angaben = bei allen gleiche Werte
@@ -738,7 +739,7 @@ function buildExport(p){
   const rooms=sortedRooms(p);
   let tR=0,tF=0,tV=0,tP=0;const tM={};MS_KEYS.forEach(t=>tM[t]=0);
   (p.rooms||[]).forEach(r=>{tR++;tP+=(r.photos||[]).length;(r.fenster||[]).forEach(f=>{tF++;tP+=(f.photos||[]).length;(f.verglasungen||[]).forEach(v=>{tV++;(v.messungen||[]).forEach(m=>{tM[msTyp(m)]++;});tP+=(v.photos||[]).length;});});});
-  ov.push(["Statistik"],["Räume",tR],["Fenster",tF],["Verglasungen",tV],...MS_KEYS.map(t=>["Messungen "+MS_TYPES[t].label,tM[t]]),["Fotos",tP],[],
+  ov.push(["Statistik"],["Räume",tR],["Fenster",tF],["Verglasungen",tV],...MS_KEYS.map(t=>["Messungen "+MS_TYPES[t].label,tM[t]]),["Fotos",tP],...((p.typen||[]).length?[["Fenstertypen",(p.typen||[]).length]]:[]),[],
     ["Datenquellen"],["M","Messwert"],["H","Herstellerangabe"],["P","Planungsdaten"]);
   // Defaults
   if(p.defaults&&Object.keys(p.defaults).length>0){ov.push([],["Standardwerte"]);Object.entries(p.defaults).forEach(([k,v])=>{if(v&&FIELDS[k])ov.push([FIELDS[k].label,v]);});}
@@ -752,13 +753,14 @@ function buildExport(p){
   if(geoOn)fHead.push("Geometrie","Felder","Flügel beweglich");
   if(masseOn)fHead.push("Rahmenmaße i/a [mm]");
   fHead.push("Bemerkung Fenster","Bemerkung Verglasung");
+  const typOn=(p.typen||[]).length>0;if(typOn)fHead.push("Fenstertyp","Abweichung vom Typ");
   const fCells=(fen,vg)=>{const row=[];
     vf.forEach(([k,d])=>{row.push(vg.data?.[k]||resolveDef(k,fen,vg,p));if(d.src&&p.showSrc)row.push(vg.sources?.[k]||"");});
     ff.forEach(([k,d])=>{row.push(fen.data?.[k]||resolveDef(k,fen,null,p));if(d.src&&p.showSrc)row.push(fen.sources?.[k]||"");});
     if(zOn)row.push(fen.zustandRahmen||"");
     if(geoOn){const g=fen.geometrie;row.push(g?geoSummary(g):"",g?geoCellCount(g):"",g?geoMovableCount(g):"");}
     if(masseOn)row.push(masseSummary(fen.rahmenmasse));
-    row.push(fen.notizen||"",vg.notizen||"");return row;};
+    row.push(fen.notizen||"",vg.notizen||"");if(typOn){const t=typOf(p,fen);row.push(t?t.kurz:"",t?typDiffText(fen,t):"");}return row;};
   const loc=(room,fen,vg)=>[room.trakt||"",room.geschoss||"",room.raumId||"",room.raumnummer||"",fen.nr||"",vg.nr||""];
 
   // Foto-Dateinamen einmal berechnen; Messfotos je Messwert-ID für das Blatt "Messungen"
@@ -792,7 +794,12 @@ function buildExport(p){
   // Blatt "Fotoverzeichnis" – Dateinamen entsprechen dem ZIP-Export (Ordner "fotos")
   const fr=[["Nr","Ebene","Gebäudeteil","Geschoss","Raumnummer","Fenster","Verglasung","Typ","Messwert","Zeitstempel","Datei im ZIP"]];
   pes.forEach(e=>fr.push([e.n,e.ebene,e.room.trakt||"",e.room.geschoss||"",e.room.raumnummer||"",e.fen?e.fen.nr:"",e.vg?e.vg.nr:"",e.typ,e.wert||"",e.ph.zeit||"","fotos/"+e.name]));
-  return{ov,mr,vr,zr,fr};
+  // Blatt "Fenstertypen"
+  const tr=[["Kürzel","Bezeichnung","Fenster","davon abweichend","Geometrie","Felder","Flügel beweglich",...TYP_FIELDS.map(k=>FIELDS[k].label),"Rahmenmaße i/a [mm]","Unterlagen","Referenzfoto","Fenster-Nr.","Bemerkung"]];
+  (p.typen||[]).forEach(t=>{const fs=typFenster(p,t.id),g=t.geometrie;tr.push([t.kurz||"",t.name||"",fs.length,fs.filter(x=>typDiff(x.f,t).length).length,geoSummary(g),geoCellCount(g),geoMovableCount(g),
+    ...TYP_FIELDS.map(k=>(t.data||{})[k]||""),masseSummary(t.rahmenmasse),(t.docIds||[]).map(id=>{const d=(p.docs||[]).find(x=>x.id===id);return d?docTitle(d):"";}).filter(Boolean).join("; "),
+    pes.filter(e=>e.ebene==="Fenstertyp"&&(t.photos||[]).some(ph=>ph.id===e.ph.id)).map(e=>"fotos/"+e.name).join(", "),fs.map(x=>x.f.nr).join(", "),t.notizen||""]);});
+  return{ov,mr,vr,zr,fr,tr};
 }
 
 function doExcelExport(p){const d=buildExport(p);const wb=XLSX.utils.book_new();
@@ -801,6 +808,7 @@ function doExcelExport(p){const d=buildExport(p);const wb=XLSX.utils.book_new();
   const w2=XLSX.utils.aoa_to_sheet(d.mr);w2["!cols"]=d.mr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,22))}));w2["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:d.mr[0].length-1}})};XLSX.utils.book_append_sheet(wb,w2,"Messungen");
   const w3=XLSX.utils.aoa_to_sheet(d.zr);w3["!cols"]=d.zr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,20))}));w3["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:d.zr[0].length-1}})};XLSX.utils.book_append_sheet(wb,w3,"Zusammenfassung");
   if(d.fr.length>1){const w4=XLSX.utils.aoa_to_sheet(d.fr);XLSX.utils.book_append_sheet(wb,w4,"Fotoverzeichnis");}
+  if(d.tr&&d.tr.length>1){const w5=XLSX.utils.aoa_to_sheet(d.tr);w5["!cols"]=d.tr[0].map(h=>({wch:Math.max(10,Math.min(String(h).length+2,24))}));XLSX.utils.book_append_sheet(wb,w5,"Fenstertypen");}
   XLSX.writeFile(wb,expName(p,"xlsx"));}
 const expName=(p,ext)=>`FensterCheck_${fnSafe(p.name)||"Projekt"}_${new Date().toISOString().slice(0,10)}.${ext}`;
 function doCSVExport(p){const d=buildExport(p);const csv=d.mr.map(r=>r.map(c=>{const s=String(c??"");return s.includes(";")||s.includes('"')||s.includes("\n")?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\n");download(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"}),expName(p,"csv"));}
@@ -1197,7 +1205,7 @@ function TeilungPick({p,value,onChange,refF,aspect}){const t=value||{k:"n",n:1},
       {t.c>1&&t.r>1&&<button style={{...gb,...$.bO}} onClick={()=>onChange({...t,zeilen:!t.zeilen})}>{t.zeilen?"Zeilen durchgehend":"Spalten durchgehend"} ⇄</button>}</div>}
     <div style={{display:"flex",alignItems:"center",gap:8}}>{g&&<div style={{width:56}}><GeoSvg mini geo={g} aspect={aspect||GEO_ASPECT_DEF}/></div>}<span style={{fontSize:11,color:C.tx2}}>{g?`${n} Felder = ${n} Verglasungen (Öffnungsarten danach in der Skizze)`:`${n} Verglasung${n===1?"":"en"}, ohne Skizze`}</span></div>
   </div>;}
-function GeoEditor({geo,onChange,verglasungen,onJump,onSync,onClear,getVorbilder,aspect}){
+function GeoEditor({geo,onChange,verglasungen,onJump,onSync,onClear,getVorbilder,aspect,noVg}){
   const g=normalizeGeo(geo),vgs=verglasungen||[],fx={geometrie:geo,verglasungen:vgs},sk=fenSkizze(fx),vok=geoVgOk(fx);
   const[sel,setSel]=useState(null);
   const[showTpl,setShowTpl]=useState(geoIsLeaf(g.tree)&&!g.tree.art&&!g.tree.role&&!g.tree.vg);
@@ -1238,7 +1246,7 @@ function GeoEditor({geo,onChange,verglasungen,onJump,onSync,onClear,getVorbilder
       {geoIsLeaf(node)&&<>
         <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...gb,flex:"1 1 30%",...((node.art||"")===t?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{art:t}))}>{t||"leer"}</button>)}</div>
         {GEO_BANDS[node.art]&&<div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{GEO_BANDS[node.art].map(b=><button key={b} style={{...gb,...(node.band===b?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{band:b}))}>{BAND_L[b]}</button>)}<button style={{...gb,...(node.band?$.bO:$.bP)}} onClick={()=>upd(geoSetLeaf(g,cur,{band:""}))}>—</button></div>}
-        {sk?(()=>{const mine=vgs.find(v=>v.id===node.vg),others=vgs.filter(v=>v.id!==node.vg),nm=v=>(v.messungen||[]).length;
+        {noVg?null:sk?(()=>{const mine=vgs.find(v=>v.id===node.vg),others=vgs.filter(v=>v.id!==node.vg),nm=v=>(v.messungen||[]).length;
           return <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Verglasung <b style={{color:C.tx}}>V{mine?mine.nr:"?"}</b>{mine&&nm(mine)?` (${nm(mine)} Messwert${nm(mine)===1?"":"e"})`:""}{others.length?" · Inhalt tauschen mit:":""}</span>
             {others.map(v=><button key={v.id} title={`Inhalte (Messwerte, Fotos, Angaben) von V${mine?mine.nr:"?"} und V${v.nr} tauschen`} style={{...gb,...$.bO}} onClick={()=>upd(geoSwapVg(g,cur,v.id),undefined,{t:"pick",msg:`Inhalte V${mine?mine.nr:"?"} ⇄ V${v.nr} getauscht`})}>V{v.nr}{nm(v)?` · ${nm(v)}×`:""}</button>)}
             {node.vg&&onJump&&<button style={{...gb,...$.bP}} onClick={()=>onJump(node.vg)}>→ öffnen</button>}</div>;})()
@@ -1332,7 +1340,7 @@ function App(){
   // Plan-Ansicht: gewählte Unterlage, Bearbeiten-Modus, Werkzeug (nav|punkt|rechteck), Auswahl zum Verorten, Fokus, Rücksprung
   const[planId,setPlanId]=useState(null);const[planEdit,setPlanEdit]=useState(false);const[planTool,setPlanTool]=useState("nav");
   const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planRet,setPlanRet]=useState({view:"survey"});   // Rücksprung aus dem Plan: Ansicht + Raum/Fenster/Verglasung beim ersten Öffnen
-  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);const[newF,setNewF]=useState(null);const[msMove,setMsMove]=useState(null);   // msMove: {mId} = Messwert verschieben   // newF: Dialog «Neues Fenster» {rId,refId,nr,teilung}   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
+  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);const[newF,setNewF]=useState(null);const[msMove,setMsMove]=useState(null);const[typEd,setTypEd]=useState(null);const[typAsk,setTypAsk]=useState(null);const[typAsg,setTypAsg]=useState(null);const[typSug,setTypSug]=useState(null);const[pv,setPv]=useState(null);const[typFrom,setTypFrom]=useState("setup");   // Fenstertypen: Typ-Blatt {id,draft}, Rückfrage Weitergabe, Zuweisen, Vorschläge, Bildbetrachter {photos,title}   // msMove: {mId} = Messwert verschieben   // newF: Dialog «Neues Fenster» {rId,refId,nr,teilung}   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
   const[planNew,setPlanNew]=useState(null);
   const[planSerie,setPlanSerie]=useState(null);   // Serienmodus beim Anlegen im Plan {rId,lastNr,nVg}
   const[fromPlan,setFromPlan]=useState(false);
@@ -1632,6 +1640,7 @@ function App(){
         <div style={{flex:"1 1 150px"}}><label style={$.lbl}>Fenster-Nr. / Bezeichnung</label><DInp key={f.id} style={{...$.inp,...$.inpS}} value={f.nr||""} onCommit={t=>renFen(rm.id,f.id,t)}/></div>
         <div style={{flex:"1 1 150px"}}><label style={$.lbl}>Raum</label><select style={{...$.sel,...$.selS,width:"100%"}} value={rm.id} onChange={e=>move(e.target.value)}>{sortedRooms(p).map(r=><option key={r.id} value={r.id}>{r.raumnummer||r.raumId||"?"} · {r.geschoss}{r.trakt?" · "+r.trakt:""}</option>)}</select></div></div>
       {dups.length>0&&<div style={{fontSize:11,color:C.warn,marginBottom:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>⚠ Diese Nummer gibt es schon{dups.some(d=>d.r.id!==rm.id)?` (${[...new Set(dups.map(d=>d.r.raumnummer||d.r.raumId))].join(", ")})`:" in diesem Raum"}.{sug&&<button style={{...gb,padding:"3px 10px"}} onClick={()=>renFen(rm.id,f.id,sug)}>{sug} verwenden</button>}</div>}
+      {typRow(p,rm,f,true)}
       {!f.isVg&&<GeoEditor key={f.id} geo={f.geometrie} onChange={(ng,op)=>geoEdit(rm.id,f.id,ng,op)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={jump} onSync={()=>geoEdit(rm.id,f.id,f.geometrie,{t:"sync"})} getVorbilder={()=>geoVorbilder(p,f.id)} onClear={()=>clearGeo(rm,f)}/>}
       <div style={{display:"flex",gap:6,marginTop:12,flexWrap:"wrap"}}>
         {!f.isVg&&<button style={gb} onClick={()=>dupFen(rm.id,f.id,1)}>⧉ Duplizieren</button>}
@@ -1639,6 +1648,97 @@ function App(){
         <button style={{...gb,color:C.err,marginLeft:"auto"}} onClick={del}>🗑 Fenster löschen</button></div>
     </div></div>;};
   const clearGeo=(rm,f)=>{if(confirm(`Skizze von ${f.nr} entfernen? Die ${(f.verglasungen||[]).length} Verglasung(en) bleiben erhalten; ihre Zahl wird dann wieder über «+ Verglasung» geführt.`))setGeo(rm.id,f.id,null);};
+
+  // ── Fenstertypen: Typ-Blatt (Entwurf; «Übernehmen» gibt Änderungen mit Vorschau an alle Fenster des Typs weiter), Zuweisen, Vorschläge ──
+  const openTyp=id=>{const p=projRef.current,t=id&&(p.typen||[]).find(x=>x.id===id);setTypEd({id:t?t.id:null,draft:JSON.parse(JSON.stringify(t||typNorm({kurz:nextTypKurz(p)})))});};
+  const applyTyp=(d,skipLoss)=>{let res=null;mut(p=>{res=typApply(p,d.id,d,{skipLoss:!!skipLoss});});if(res&&res.photoIds.length)phDel(res.photoIds);setTypAsk(null);setTypEd(null);
+    const n=res?res.rows.filter(r=>!r.skipped).length:0;flash(`Typ ${d.kurz} gespeichert`+(n?` · ${n} Fenster nachgeführt`:""));};
+  const saveTyp=()=>{const e=typEd,p=projRef.current;if(!e)return;const d=typNorm({...e.draft,id:e.id||e.draft.id});if(!_sv(d.kurz)){flash("Kürzel angeben");return;}
+    if((p.typen||[]).some(t=>t.id!==d.id&&_sv(t.kurz).toLowerCase()===_sv(d.kurz).toLowerCase())&&!confirm(`Kürzel ${d.kurz} gibt es schon. Trotzdem speichern?`))return;
+    if(!e.id){mut(q=>{q.typen=[...(q.typen||[]),d];});setTypEd(null);flash(`Typ ${d.kurz} angelegt`);return;}
+    const plan=typPlan(p,d.id,d);const ch=plan?plan.rows.filter(r=>r.set.length||r.geo==="neu"||r.geo==="attr"||r.lost.length):[];
+    if(!ch.length){applyTyp(d,false);return;}setTypAsk({d,plan});};
+  const delTyp=id=>{const p=projRef.current,t=(p.typen||[]).find(x=>x.id===id);if(!t)return;const n=typFenster(p,id).length;
+    if(!confirm(`Typ ${t.kurz} löschen?`+(n?` ${n} Fenster verlieren die Zuordnung; ihre Angaben und Skizzen bleiben.`:"")))return;
+    phDel(photoIdsIn(t));mut(q=>{q.typen=(q.typen||[]).filter(x=>x.id!==id);(q.rooms||[]).forEach(r=>(r.fenster||[]).forEach(f=>{if(f.typ===id)delete f.typ;}));});setTypEd(null);flash(`Typ ${t.kurz} gelöscht`);};
+  // Typ einem Fenster zuweisen: ohne Inhalt → Typ-Skizze; mit Inhalt und anderem Aufbau → fragen (Typ-Skizze oder eigene behalten)
+  const assignTyp=(rId,fId,typId)=>{const p=projRef.current,f=gF(gR(p,rId),fId),t=(p.typen||[]).find(x=>x.id===typId);if(!f||!t)return;
+    const dry=typAssign(JSON.parse(JSON.stringify(f)),t,{geo:"typ"});let mode="typ";
+    if(dry.geo==="typ"&&(f.verglasungen||[]).some(v=>vgInhalt(v))){const lost=dry.removed.filter(v=>vgInhalt(v)).map(v=>`V${v.nr} (${vgInhalt(v)})`);
+      mode=confirm(`Skizze von Typ ${t.kurz} übernehmen?`+(lost.length?` Dabei entfallen: ${lost.join(", ")}.`:" Die Verglasungen werden den Feldern der Reihe nach zugeordnet.")+"\n\nOK = Typ-Skizze · Abbrechen = eigene Skizze behalten (gilt als Abweichung)")?"typ":"eigen";}
+    let res=null;mut(q=>{const ff=gF(gR(q,rId),fId);if(ff)res=typAssign(ff,t,{geo:mode});});if(res&&res.removed.length)phDel(res.removed.flatMap(v=>photoIdsIn(v)));flash(`Typ ${t.kurz} zugewiesen`);};
+  const unassignTyp=(rId,fId)=>{mut(q=>{const f=gF(gR(q,rId),fId);if(f)delete f.typ;});flash("Typ gelöst");};
+  const saveAsTyp=(rId,fId)=>{const p=projRef.current,f=gF(gR(p,rId),fId);if(!f)return;const st=typStem(f.nr),def=st&&!(p.typen||[]).some(t=>_sv(t.kurz).toLowerCase()===st.toLowerCase())?st:nextTypKurz(p);
+    const kurz=prompt("Kürzel des neuen Fenstertyps",def);if(kurz==null||!kurz.trim())return;const t=typFromFen(f,{kurz:kurz.trim()});
+    mut(q=>{q.typen=[...(q.typen||[]),t];const ff=gF(gR(q,rId),fId);if(ff)typAssign(ff,t,{geo:"typ"});});flash(`Typ ${t.kurz} angelegt`);setTypEd({id:t.id,draft:JSON.parse(JSON.stringify(t))});};
+  // Zeile «Typ» an Fensterkarte und Blatt «Fenster bearbeiten»
+  const typRow=(p,rm,f,always)=>{if(f.isVg||p.modus==="verglasung")return null;const ts=p.typen||[],t=typOf(p,f);if(!t&&!ts.length&&!always)return null;
+    const sb={...$.btn,...$.bO,...$.bS,padding:"4px 10px"},dt=t?typDiffText(f,t):"";
+    return <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",padding:"7px 9px",background:C.sf2,borderRadius:8,marginBottom:8,fontSize:12}}>
+      {t?<><span>Typ <b style={{color:C.ac}}>{t.kurz}</b>{t.name?" · "+t.name:""}</span><span style={{color:dt?C.warn:C.ok,flex:1,minWidth:90}}>{dt?"abweichend: "+dt:"entspricht dem Typ"}</span>
+        {(t.photos||[]).length>0&&<button style={sb} onClick={()=>setPv({photos:t.photos,title:"Typ "+t.kurz})}>📷</button>}
+        {(t.docIds||[]).map(id=>(p.docs||[]).find(d=>d.id===id)).filter(d=>d&&d.photoId).map(d=><button key={d.id} style={sb} title={docTitle(d)} onClick={()=>setPv({photos:[{id:d.photoId,w:d.w,h:d.h,zeit:d.erstellt}],title:docTitle(d)})}>📄 {DOC_ARTEN[d.art]?DOC_ARTEN[d.art].label:"Unterlage"}</button>)}
+        <button style={sb} onClick={()=>openTyp(t.id)}>Typ öffnen</button><button style={sb} onClick={()=>unassignTyp(rm.id,f.id)}>lösen</button></>
+      :<span style={{color:C.tx2,flex:1}}>Kein Fenstertyp</span>}
+      {ts.length>0&&<select style={{...$.sel,...$.selS,width:"auto",maxWidth:170}} value="" onChange={e=>e.target.value&&assignTyp(rm.id,f.id,e.target.value)}><option value="">{t?"Typ ändern …":"Typ zuweisen …"}</option>{ts.filter(x=>x.id!==f.typ).map(x=><option key={x.id} value={x.id}>{x.kurz}{x.name?" · "+x.name:""}</option>)}</select>}
+      {!t&&<button style={sb} onClick={()=>saveAsTyp(rm.id,f.id)}>Als Typ speichern</button>}
+    </div>;};
+  const typSheet=()=>{if(!typEd||!proj)return null;const p=proj,e=typEd,d=e.draft,upd=o=>setTypEd(x=>({...x,draft:{...x.draft,...o}}));
+    const fs=e.id?typFenster(p,e.id):[],sf=o=>setTypEd(x=>({...x,draft:{...x.draft,...o(x.draft)}}));   // funktional: verzögerte Eingaben überschreiben nichts
+    return <div style={$.modal} onClick={()=>setTypEd(null)}><div style={{...$.modalC,maxWidth:600}} onClick={ev=>ev.stopPropagation()}><div style={$.modalH}/>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}><div style={{fontWeight:800,fontSize:16}}>🧩 Fenstertyp {e.id?"bearbeiten":"anlegen"}</div><button style={{...$.btn,...$.bP,...$.bS,padding:"6px 18px"}} onClick={saveTyp}>Übernehmen</button></div>
+      <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}><div style={{flex:"1 1 110px"}}><label style={$.lbl}>Kürzel</label><input style={$.inp} value={d.kurz} onChange={ev=>upd({kurz:ev.target.value})} placeholder="z.B. T01 oder FE09"/></div>
+        <div style={{flex:"2 1 180px"}}><label style={$.lbl}>Bezeichnung</label><input style={$.inp} value={d.name} onChange={ev=>upd({name:ev.target.value})} placeholder="z.B. Holz-DK 2-flg mit Oberlicht"/></div></div>
+      {e.id&&fs.length>0&&<div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Änderungen gehen mit «Übernehmen» an die {fs.length} Fenster dieses Typs (Vorschau vorher). Abweichend ausgefüllte Werte und eigene Skizzen bleiben.</div>}
+      <div style={$.card}><GeoEditor key={e.id||d.id} noVg geo={d.geometrie} verglasungen={[]} onChange={ng=>{const k=geoEnsureKeys(ng,d.kSeq);upd({geometrie:k.geo,kSeq:k.seq});return true;}} getVorbilder={()=>geoVorbilder(p,"")}/></div>
+      <div style={$.card}><div style={$.cardT}>Konstruktion</div>{TYP_FIELDS.map(k=><FldInp key={k} k={k} def={FIELDS[k]} value={(d.data||{})[k]||""} source={(d.sources||{})[k]||""} showSrc={p.showSrc}
+          onVal={v=>sf(x=>({data:{...x.data,[k]:v}}))} onSrc={sv=>sf(x=>({sources:{...x.sources,[k]:sv}}))}/>)}
+        <label style={$.lbl}>Rahmen-Abmessungen</label><RahmenMasse val={d.rahmenmasse} onChange={nm=>sf(()=>({rahmenmasse:nm}))}/></div>
+      <div style={$.card}><Photos label="Referenzfoto" photos={d.photos||[]} onAdd={ph=>setTypEd(x=>({...x,draft:{...x.draft,photos:[...(x.draft.photos||[]),ph]}}))} onDel={pid=>upd({photos:(d.photos||[]).filter(x=>x.id!==pid)})}/>
+        {(p.docs||[]).length>0&&<><label style={{...$.lbl,marginTop:8}}>Unterlagen (Detail, Datenblatt …)</label><div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{sortedDocs(p).filter(x=>!isPlanDoc(x)).concat(sortedDocs(p).filter(isPlanDoc)).map(x=>{const on=(d.docIds||[]).includes(x.id);
+          return <button key={x.id} style={{...$.btn,...$.bS,padding:"4px 9px",fontSize:11,...(on?$.bP:$.bO)}} onClick={()=>upd({docIds:on?d.docIds.filter(y=>y!==x.id):[...(d.docIds||[]),x.id]})}>{docTitle(x)}</button>;})}</div></>}
+        <label style={{...$.lbl,marginTop:8}}>Bemerkung</label><textarea style={{...$.inp,...$.inpS,minHeight:44}} value={d.notizen||""} onChange={ev=>upd({notizen:ev.target.value})}/></div>
+      {e.id&&<div style={$.card}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}><div style={$.cardT}>Fenster dieses Typs ({fs.length})</div><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setTypAsg({typId:e.id,pat:(d.kurz||"")+"*",sel:null})}>Zuweisen …</button></div>
+        {fs.slice(0,40).map(({r,f})=>{const dt=typDiffText(f,typOf(p,f));return <div key={f.id} style={{fontSize:12,padding:"3px 0",display:"flex",gap:6}}><b>{f.nr}</b><span style={{color:C.tx2}}>{r.raumnummer||r.raumId}</span>{dt&&<span style={{color:C.warn}}>abweichend: {dt}</span>}</div>;})}
+        {fs.length>40&&<div style={{fontSize:11,color:C.tx3}}>… und {fs.length-40} weitere</div>}</div>}
+      <div style={{display:"flex",gap:6,marginTop:4}}>{e.id&&<button style={{...$.btn,...$.bO,...$.bS,color:C.err}} onClick={()=>delTyp(e.id)}>🗑 Typ löschen</button>}<button style={{...$.btn,...$.bO,...$.bS,marginLeft:"auto"}} onClick={()=>setTypEd(null)}>Abbrechen</button><button style={{...$.btn,...$.bP,...$.bS}} onClick={saveTyp}>Übernehmen</button></div>
+    </div></div>;};
+  // Rückfrage vor der Weitergabe: was ändert sich in wie vielen Fenstern, was fällt weg
+  const typAskModal=()=>{if(!typAsk)return null;const {d,plan}=typAsk,rows=plan.rows,geoN=rows.filter(r=>r.geo==="neu"||r.geo==="attr").length,cr=rows.reduce((a,r)=>a+r.created,0),skip=rows.filter(r=>r.geo==="skip"),
+      dat=rows.filter(r=>r.set.length).length,keep=rows.filter(r=>r.keep.length),loss=rows.filter(r=>r.lost.some(x=>x.inh)),drop=rows.reduce((a,r)=>a+r.lost.length,0);
+    return <div style={{...$.modal,zIndex:210}} onClick={()=>setTypAsk(null)}><div style={$.modalC} onClick={ev=>ev.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:8}}>Typ {d.kurz} ändern – {rows.length} Fenster</div>
+      <ul style={{margin:"0 0 10px",paddingLeft:18,fontSize:13,lineHeight:1.6}}>
+        {geoN>0&&<li>Skizze in {geoN} Fenster{geoN===1?"":"n"} angepasst{cr?` (+${cr} Verglasung${cr===1?"":"en"})`:""}{drop?`, −${drop} Verglasung${drop===1?"":"en"}`:""}</li>}
+        {skip.length>0&&<li>{skip.length} mit eigener Skizze bleiben unverändert ({skip.slice(0,4).map(r=>r.nr).join(", ")}{skip.length>4?" …":""})</li>}
+        {dat>0&&<li>Angaben in {dat} Fenster{dat===1?"":"n"} angepasst</li>}
+        {keep.length>0&&<li>{keep.length} behalten eigene Werte ({keep.slice(0,3).map(r=>r.nr+": "+r.keep.map(x=>FIELDS[x.k]?FIELDS[x.k].label:x.k).join("/")).join("; ")}{keep.length>3?" …":""})</li>}
+      </ul>
+      {loss.length>0&&<div style={{fontSize:12,color:C.err,background:C.errBg||C.sf2,padding:8,borderRadius:8,marginBottom:10}}>⚠ In {loss.length} Fenster{loss.length===1?"":"n"} entfällt eine Verglasung mit Inhalt: {loss.slice(0,5).map(r=>`${r.nr} (${r.raum}): `+r.lost.filter(x=>x.inh).map(x=>`V${x.nr} ${x.inh}`).join(", ")).join("; ")}{loss.length>5?" …":""}</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:6}}><button style={{...$.btn,...$.bP}} onClick={()=>applyTyp(d,false)}>Übernehmen{loss.length?" (alle)":""}</button>
+        {loss.length>0&&<button style={{...$.btn,...$.bO}} onClick={()=>applyTyp(d,true)}>Übernehmen ohne die {loss.length} Fenster mit Inhalt</button>}
+        <button style={{...$.btn,...$.bO}} onClick={()=>setTypAsk(null)}>Abbrechen</button></div></div></div>;};
+  // Zuweisen nach Nummernmuster bzw. Auswahl
+  const typAsgModal=()=>{if(!typAsg||!proj)return null;const p=proj,a=typAsg,t=(p.typen||[]).find(x=>x.id===a.typId);if(!t)return null;
+    const all=[];(p.rooms||[]).forEach(r=>(r.fenster||[]).forEach(f=>{if(!f.isVg&&f.typ!==t.id)all.push({r,f});}));
+    const sel=a.sel||new Set(all.filter(x=>nrMatch(x.f.nr,a.pat)).map(x=>x.f.id)),tog=id=>{const n=new Set(sel);n.has(id)?n.delete(id):n.add(id);setTypAsg({...a,sel:n});};
+    const go=()=>{const ids=all.filter(x=>sel.has(x.f.id));let n=0,eig=0,rm=[];mut(q=>{ids.forEach(({r,f})=>{const ff=gF(gR(q,r.id),f.id);if(!ff)return;const has=(ff.verglasungen||[]).some(v=>vgInhalt(v));const res=typAssign(ff,t,{geo:has?"eigen":"typ"});n++;if(res.geo==="eigen")eig++;rm.push(...res.removed);});});
+      if(rm.length)phDel(rm.flatMap(v=>photoIdsIn(v)));setTypAsg(null);flash(`${n} Fenster Typ ${t.kurz} zugewiesen`+(eig?` · ${eig} behalten ihre Skizze`:""));};
+    return <div style={{...$.modal,zIndex:210}} onClick={()=>setTypAsg(null)}><div style={$.modalC} onClick={ev=>ev.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:8}}>Typ {t.kurz} zuweisen</div>
+      <label style={$.lbl}>Nummern-Muster (* = beliebig, ? = ein Zeichen)</label><input style={{...$.inp,marginBottom:8}} value={a.pat} onChange={ev=>setTypAsg({...a,pat:ev.target.value,sel:null})}/>
+      <div style={{maxHeight:"40vh",overflowY:"auto",border:`1px solid ${C.bd}`,borderRadius:8,padding:"4px 8px",marginBottom:8}}>{all.map(({r,f})=>{const o=typOf(p,f);return <label key={f.id} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={sel.has(f.id)} onChange={()=>tog(f.id)}/><b>{f.nr}</b><span style={{color:C.tx2}}>{r.raumnummer||r.raumId}</span>{o&&<span style={{color:C.warn,fontSize:11}}>Typ {o.kurz}</span>}</label>;})}</div>
+      <div style={{fontSize:11,color:C.tx2,marginBottom:10}}>Leere Angaben erben vom Typ. Fenster ohne Messwerte/Fotos bekommen die Typ-Skizze, die übrigen behalten ihre Skizze (gelten dann als abweichend, wenn sie anders ist).</div>
+      <button style={{...$.btn,...$.bP,...$.bBl}} disabled={!sel.size} onClick={go}>{sel.size} Fenster zuweisen</button></div></div>;};
+  // Typen aus Nummern vorschlagen (Nummernstamm vor «-»)
+  const typSugModal=()=>{if(!typSug||!proj)return null;const p=proj,list=typSuggest(p),sel=typSug.sel||new Set(list.map(x=>x.kurz)),tog=k=>{const n=new Set(sel);n.has(k)?n.delete(k):n.add(k);setTypSug({sel:n});};
+    const go=()=>{let nt=0,nf=0;mut(q=>{typSuggest(q).filter(x=>sel.has(x.kurz)).forEach(sg=>{const fs=[];(q.rooms||[]).forEach(r=>(r.fenster||[]).forEach(f=>{if(sg.fIds.includes(f.id))fs.push(f);}));const ref=fs.find(f=>f.id===sg.refId)||fs[0];
+      const t=typFromFens(fs,ref,{kurz:sg.kurz});q.typen=[...(q.typen||[]),t];nt++;fs.forEach(f=>{typAssign(f,t,{geo:"eigen"});nf++;});});});setTypSug(null);flash(`${nt} Typen angelegt, ${nf} Fenster zugewiesen`);};
+    return <div style={{...$.modal,zIndex:210}} onClick={()=>setTypSug(null)}><div style={$.modalC} onClick={ev=>ev.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Typen aus Nummern</div>
+      <div style={{fontSize:12,color:C.tx2,marginBottom:8}}>Fenster ohne Typ, gruppiert nach dem Nummernstamm vor «-» (FE09-E.01 → FE09). Aufteilung vom häufigsten Aufbau, Angaben nur, wenn bei allen gleich. Skizzen der Fenster bleiben unverändert.</div>
+      {!list.length?<div style={{fontSize:13,color:C.tx3,marginBottom:10}}>Keine Vorschläge (keine Nummern mit Stamm wie «FE09-…» ohne Typ).</div>
+      :<div style={{maxHeight:"45vh",overflowY:"auto",border:`1px solid ${C.bd}`,borderRadius:8,padding:"4px 8px",marginBottom:10}}>{list.map(x=><label key={x.kurz} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={sel.has(x.kurz)} onChange={()=>tog(x.kurz)}/><b>{x.kurz}</b><span style={{color:C.tx2}}>{x.n} Fenster</span>{x.abw>0&&<span style={{color:C.warn,fontSize:11}}>{x.abw} mit anderer Skizze</span>}</label>)}</div>}
+      <button style={{...$.btn,...$.bP,...$.bBl}} disabled={!list.length||!sel.size} onClick={go}>{sel.size} Typen anlegen und zuweisen</button></div></div>;};
+  // Überlagerungen, die in mehreren Ansichten gebraucht werden
+  const ovl=()=><>{newFenModal()}{fenSheet()}{typSheet()}{typAskModal()}{typAsgModal()}{typSugModal()}{pv&&<PhotoViewer photos={pv.photos} start={0} title={pv.title} onClose={()=>setPv(null)}/>}</>;
 
   if(view==="home")return <div className="app" style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTERERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("info")}>ℹ️</button><button style={$.hdrB} onClick={()=>setView("settings")}>⚙</button></div><div className="body" style={$.body}>
     {projects.length>0&&projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}
@@ -1780,7 +1880,18 @@ function App(){
             {!isG&&doc.fassade&&<div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Fassade {doc.fassade} wird übernommen.</div>}
             <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:13,marginBottom:12,cursor:"pointer"}}><input type="checkbox" checked={n.serie} onChange={e=>upd({serie:e.target.checked})} style={{marginTop:3}}/><span>Serie: weitere {isG?"Tipps":"Rechtecke"} legen direkt das nächste Fenster an (Nr. +1, gleicher Raum)</span></label></>}
           <button style={{...$.btn,...$.bP,...$.bBl}} onClick={save}>Anlegen</button></div></div>;})()}
-      {fenSheet()}{Toast}</div>;}
+      {ovl()}{Toast}</div>;}
+
+  // FENSTERTYPEN
+  if(view==="typen"){const p=proj;if(!p){setView("home");return null;}const ts=[...(p.typen||[])].sort((a,b)=>_sv(a.kurz).localeCompare(_sv(b.kurz),"de",{numeric:true})),nsug=typSuggest(p).length;
+    return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(typFrom==="survey"?"survey":"setup")}>← Zurück</button><div style={$.hdrT}>Fenstertypen</div></div><div className="body" style={$.body}>
+      <div>{!ts.length?<div style={$.empty}><div style={{fontSize:34,marginBottom:6}}>🧩</div><div style={{fontWeight:700}}>Noch keine Fenstertypen</div><div style={{fontSize:12,marginTop:6}}>Neu anlegen, aus Nummern vorschlagen lassen oder an einem Fenster «Als Typ speichern».</div></div>
+        :<div style={$.card}>{ts.map(t=>{const fs=typFenster(p,t.id),ab=fs.filter(x=>typDiff(x.f,t).length).length;return <div key={t.id} style={$.li} onClick={()=>openTyp(t.id)}>
+          <div style={{width:44,flexShrink:0}}><GeoSvg mini geo={t.geometrie} aspect={geoAspect(t.data?.fensterBreite,t.data?.fensterHoehe)}/></div>
+          <div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,fontSize:15}}>{t.kurz||"—"}{t.name&&<span style={{fontWeight:400,fontSize:12,color:C.tx2}}> · {t.name}</span>}</div><div style={{fontSize:11,color:C.tx2}}>{fs.length} Fenster{ab?<span style={{color:C.warn}}> · {ab} abweichend</span>:""} · {geoCellCount(t.geometrie)} Feld{geoCellCount(t.geometrie)===1?"":"er"}</div></div><span style={{color:C.tx3}}>›</span></div>;})}</div>}
+        <button style={{...$.btn,...$.bP,...$.bBl,marginBottom:8}} onClick={()=>openTyp(null)}>+ Neuer Fenstertyp</button>
+        {nsug>0&&<button style={{...$.btn,...$.bO,...$.bBl}} onClick={()=>setTypSug({sel:null})}>Typen aus Fensternummern vorschlagen ({nsug})</button>}
+      </div></div>{ovl()}{Toast}</div>;}
 
   if(view==="docs"){const p=proj;if(!p){setView("home");return null;}const ds=sortedDocs(p),tl=traktList(p);const plans=ds.filter(isPlanDoc),other=ds.filter(d=>!isPlanDoc(d));
     const openDoc=d=>{if(isPlanDoc(d))openPlan(d.id,{from:"docs"});else if(d.photoId)setViewDoc(d);};
@@ -1850,6 +1961,8 @@ function App(){
         <button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px",color:C.err}} onClick={()=>delTrakt(t)}>🗑</button></div>;})}
       <div style={{display:"flex",gap:6,marginTop:8}}><input style={{...$.inp,...$.inpS}} value={newTrakt} onChange={e=>setNewTrakt(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){addTrakt(newTrakt);setNewTrakt("");}}} placeholder="Neuer Gebäudeteil"/><button style={{...$.btn,...$.bP,...$.bS}} onClick={()=>{addTrakt(newTrakt);setNewTrakt("");}}>+</button></div>
     </div>
+    {p.modus!=="verglasung"&&<div style={$.card}><div style={$.cardT}>Fenstertypen</div><div style={{fontSize:11,color:C.tx2,marginBottom:6}}>Gleiche Fenster einmal beschreiben (Aufteilung, Konstruktion, Referenzfoto, Unterlagen) und mehrfach zuweisen; Änderungen am Typ gehen an alle Fenster des Typs.</div>
+      <button style={{...$.btn,...$.bO,...$.bS}} onClick={()=>{setTypFrom("setup");setView("typen");}}>🧩 Fenstertypen{(p.typen||[]).length?` (${p.typen.length})`:""} …</button></div>}
     <div style={$.card}><div style={$.cardT}>Pläne & Unterlagen</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Grundrisse und Ansichten (auch Fassadenfoto oder Handskizze) für Orientierung und Verortung; Detailschnitte, Datenblätter, Energienachweise zum Nachschlagen. Import am PC mit Zuschnitt.</div>
       {(p.docs||[]).length>0&&<div style={{fontSize:12,color:C.tx,marginBottom:8}}>{Object.entries(DOC_ARTEN).map(([k,a])=>{const n=(p.docs||[]).filter(d=>d.art===k).length;return n?`${a.label}: ${n}`:null;}).filter(Boolean).join(" · ")}</div>}
@@ -1930,6 +2043,7 @@ function App(){
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Projekte</button><div style={$.hdrT}>{p.name||"Projekt"}</div><button style={$.hdrB} title="Pläne & Unterlagen" onClick={()=>openDocs("survey")}>🗺{(p.docs||[]).length?" "+p.docs.length:""}</button><button style={$.hdrB} onClick={()=>setView("setup")}>⚙</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{s.rooms}</div><div style={$.statL}>Räume</div></div><div style={$.stat}><div style={$.statV}>{s.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{s.m}</div><div style={$.statL}>Mess.</div></div><div style={$.stat}><div style={$.statV}>{s.ph}</div><div style={$.statL}>Fotos</div></div></div>
     {profOf(p)&&<div onClick={()=>setView("setup")} style={{fontSize:12,color:C.tx2,margin:"-2px 2px 10px",cursor:"pointer"}}>Profil: <b style={{color:profMess(p)?C.ac:C.tx}}>{profOf(p).name}</b>{profCustom(p)?" (angepasst)":""}{profMess(p)?" · Fortschritt = gemessen":""} <span style={{color:C.ac}}>· ändern</span></div>}
+    {(p.typen||[]).length>0&&<div onClick={()=>{setTypFrom("survey");setView("typen");}} style={{fontSize:12,color:C.tx2,margin:"-4px 2px 10px",cursor:"pointer"}}>🧩 Fenstertypen: <b style={{color:C.tx}}>{p.typen.length}</b> <span style={{color:C.ac}}>· verwalten</span></div>}
     <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler");}}} >📊 Excel</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doCSVExport(p);flash("CSV ✓");}}>📄 CSV</button>
@@ -1967,6 +2081,7 @@ function App(){
       return <FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;};
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
     return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster bearbeiten: Nummer, Raum, Aufteilung" onClick={()=>setFenEd({fId:f.id})}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{(f.verglasungen||[]).length>0&&f.verglasungen.every(v=>vgDone(p,f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}{hasPlanFor("fen",rm,f)&&<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>planFor("fen",rm,f)} title="Im Plan zeigen / verorten">🗺</button>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px",color:C.err}} title="Fenster löschen" onClick={()=>{const i=inhalt(f);if(confirm(`Fenster ${f.nr} löschen?`+(i?` Es enthält ${i}.`:"")+" Das lässt sich nicht rückgängig machen."))delFen(rm.id,f.id);}}>🗑</button></div></div>
+        {typRow(p,rm,f,false)}
         <div style={{marginBottom:8}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
         {secBlock(f,"lage")}{secBlock(f,"rahmen")}{secBlock(f,"funktion")}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
@@ -2054,7 +2169,7 @@ function App(){
       <button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{if(!edR.raumnummer.trim()&&!edR.raumId.trim()){flash("Raum oder Raum-ID angeben");return;}setRoomProps(rm.id,{trakt:(edR.trakt||"").trim(),geschoss:edR.geschoss,raumnummer:edR.raumnummer.trim(),raumId:edR.raumId.trim()});setEdR(null);flash("Raum gespeichert");}}>Speichern</button></div></div>}
     {modal==="dupR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Raum duplizieren</div><div style={{fontSize:12,color:C.tx2,marginBottom:12}}>Erzeugt Kopien dieses Raums mit Aufbau, Geometrie und Stammdaten – ohne Messungen und Fotos. Raumnummern danach anpassen.</div><div style={{marginBottom:14}}><label style={$.lbl}>Anzahl Kopien</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,10].map(n=><button key={n} style={{...$.btn,flex:1,...(dupQty===n?$.bP:$.bO)}} onClick={()=>setDupQty(n)}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{dupRoom(rm.id,dupQty);setModal(null);}}>Duplizieren</button></div></div>}
     {modal==="dupF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Fenster duplizieren</div><div style={{fontSize:12,color:C.tx2,marginBottom:12}}>Erzeugt Kopien dieses Fensters mit Daten, Geometrie und Verglasungs-Aufbau – ohne Messungen und Fotos. Zustand und Angaben danach pro Kopie anpassen.</div><div style={{marginBottom:14}}><label style={$.lbl}>Anzahl Kopien</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,10].map(n=><button key={n} style={{...$.btn,flex:1,...(dupQty===n?$.bP:$.bO)}} onClick={()=>setDupQty(n)}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{dupFen(rm.id,dupFenId,dupQty);setModal(null);}}>Duplizieren</button></div></div>}
-  {newFenModal()}{fenSheet()}{Toast}</div>;}
+  {ovl()}{Toast}</div>;}
 
   // FENSTER – ein Fenster allein (aus dem Plan, der Messung oder der kompakten Messliste); ‹ › blättert im Raum
   if(view==="fenster"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);
@@ -2070,7 +2185,7 @@ function App(){
       {fenCard(p,rm,f,"fenster")}
     </div>
     {modal==="dupF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Fenster duplizieren</div><div style={{fontSize:12,color:C.tx2,marginBottom:12}}>Erzeugt Kopien dieses Fensters mit Daten, Geometrie und Verglasungs-Aufbau – ohne Messungen und Fotos. Zustand und Angaben danach pro Kopie anpassen.</div><div style={{marginBottom:14}}><label style={$.lbl}>Anzahl Kopien</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,10].map(n=><button key={n} style={{...$.btn,flex:1,...(dupQty===n?$.bP:$.bO)}} onClick={()=>setDupQty(n)}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{dupFen(rm.id,dupFenId,dupQty);setModal(null);}}>Duplizieren</button></div></div>}
-  {newFenModal()}{fenSheet()}{Toast}</div>;}
+  {ovl()}{Toast}</div>;}
 
   // MEASURE
   if(view==="measure"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);const v=f?.verglasungen?.find(x=>x.id===vg?.id);
@@ -2179,7 +2294,7 @@ function App(){
       {(f.verglasungen||[]).filter(x=>x.id!==v.id).map(x=><button key={x.id} style={{...$.btn,...$.bO,display:"flex",alignItems:"center",gap:6}} onClick={()=>{mut(q=>{msMoveIn(gF(gR(q,rm.id),f.id),v.id,x.id,m.id);});setMsMove(null);flash(`Messwert → V${x.nr}`);}}>V{x.nr} {vgBadge(p,f,x)}</button>)}</div></div></div>;})()}
   {/* Confirm dialog for unsaved data */}
   {confirmNav&&<ConfirmDialog message="Es gibt einen noch nicht gespeicherten Messwert im Ziffernblock. Ohne Speichern fortfahren?" onYes={()=>{setNumVal("");confirmNav.action();setConfirmNav(null);}} onNo={()=>setConfirmNav(null)}/>}
-  {newFenModal()}{fenSheet()}{Toast}</div>;}
+  {ovl()}{Toast}</div>;}
 
   return null;
 }
