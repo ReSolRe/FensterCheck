@@ -589,6 +589,18 @@ const msSkipOf=(v,t)=>(v&&v.msSkip&&v.msSkip[t])||null;
 const vgGemessen=(p,v)=>profMs(p).some(t=>msOf(v,t).length>0||!!msSkipOf(v,t));
 // «Speichern & weiter»: nächster nicht erledigter Eintrag nach Index i (mit Umlauf), sonst -1
 function nextOpen(list,i,done){for(let k=1;k<list.length;k++){const j=(i+k)%list.length;if(!done(list[j]))return j;}return -1;}
+// Messwert samt Messfotos zu einer anderen Verglasung desselben Fensters verschieben; «nicht messbar» dieser Messart am Ziel entfällt (verändert f)
+function msMoveIn(f,fromId,toId,mId){const vs=(f&&f.verglasungen)||[],a=vs.find(v=>v.id===fromId),b=vs.find(v=>v.id===toId);if(!a||!b||a===b)return false;
+  const m=(a.messungen||[]).find(x=>x.id===mId);if(!m)return false;a.messungen=a.messungen.filter(x=>x!==m);(b.messungen=b.messungen||[]).push(m);
+  const ph=(a.photos||[]).filter(x=>x.msId===mId);if(ph.length){a.photos=a.photos.filter(x=>x.msId!==mId);b.photos=[...(b.photos||[]),...ph];}
+  const t=msTyp(m);if(b.msSkip&&b.msSkip[t]){delete b.msSkip[t];if(!Object.keys(b.msSkip).length)delete b.msSkip;}return true;}
+// Angaben (keys) einer Verglasung auf die übrigen des Fensters übertragen (leere Werte nicht, Quelle mit); Rückgabe: Zahl geänderter Verglasungen (verändert f)
+function vgCopyData(f,srcId,keys){const vs=(f&&f.verglasungen)||[],src=vs.find(v=>v.id===srcId);if(!src)return 0;let n=0;
+  vs.forEach(v=>{if(v===src)return;let ch=false;keys.forEach(k=>{const x=(src.data||{})[k],sv=(src.sources||{})[k]||"";if(x==null||!String(x).trim())return;
+    if(String((v.data||{})[k]??"")===String(x)&&((v.sources||{})[k]||"")===sv)return;setDataVal(v,k,x);if(!v.sources)v.sources={};if(sv)v.sources[k]=sv;else delete v.sources[k];ch=true;});if(ch)n++;});return n;}
+// Werte, die vgCopyData überschreiben würde: [{nr,k,alt,neu}]
+function vgCopyDiff(f,srcId,keys){const vs=(f&&f.verglasungen)||[],src=vs.find(v=>v.id===srcId),out=[];if(!src)return out;
+  vs.forEach(v=>{if(v===src)return;keys.forEach(k=>{const x=(src.data||{})[k],y=(v.data||{})[k];if(x!=null&&String(x).trim()&&y!=null&&String(y).trim()&&String(y)!==String(x))out.push({nr:v.nr,k,alt:String(y),neu:String(x)});});});return out;}
 function msStats(list){const w=list.map(m=>m.wert).filter(x=>typeof x==="number"&&!isNaN(x));if(!w.length)return null;const s=[...w].sort((a,b)=>a-b);const r=x=>Math.round(x*100)/100;
   return {n:w.length,avg:r(w.reduce((a,b)=>a+b,0)/w.length),min:s[0],max:s[s.length-1],med:r(s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2)};}
 // Eine Verglasung gilt als "erfasst", wenn an ihr vor Ort gearbeitet wurde – Messung, Foto oder Daten an der Verglasung,
@@ -1223,7 +1235,7 @@ function App(){
   // Plan-Ansicht: gewählte Unterlage, Bearbeiten-Modus, Werkzeug (nav|punkt|rechteck), Auswahl zum Verorten, Fokus, Rücksprung
   const[planId,setPlanId]=useState(null);const[planEdit,setPlanEdit]=useState(false);const[planTool,setPlanTool]=useState("nav");
   const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planRet,setPlanRet]=useState({view:"survey"});   // Rücksprung aus dem Plan: Ansicht + Raum/Fenster/Verglasung beim ersten Öffnen
-  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);const[newF,setNewF]=useState(null);   // newF: Dialog «Neues Fenster» {rId,refId,nr,teilung}   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
+  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);const[newF,setNewF]=useState(null);const[msMove,setMsMove]=useState(null);   // msMove: {mId} = Messwert verschieben   // newF: Dialog «Neues Fenster» {rId,refId,nr,teilung}   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
   const[planNew,setPlanNew]=useState(null);
   const[planSerie,setPlanSerie]=useState(null);   // Serienmodus beim Anlegen im Plan {rId,lastNr,nVg}
   const[fromPlan,setFromPlan]=useState(false);
@@ -2025,6 +2037,7 @@ function App(){
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
                 <div style={{flex:1,minWidth:0}}><span style={{fontFamily:"monospace",fontWeight:800,fontSize:16}}>{m.wert} {U.unit}</span><span style={{fontSize:10,color:C.tx2,marginLeft:8}}>{new Date(m.zeit).toLocaleTimeString("de-CH",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>{msZusatz(m)&&<span style={{fontSize:10,color:C.tx3,marginLeft:6}}>{msZusatz(m)}</span>}{phs.length>0&&<span style={{...$.badge,background:C.sf2,color:C.tx2,marginLeft:6,fontSize:10}}>📷 {phs.length}</span>}</div>
                 <PhotoBtn small onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,ms:g.t,msId:m.id})}/>
+                {!isV&&(f.verglasungen||[]).length>1&&<button title="Messwert zu einer anderen Verglasung dieses Fensters verschieben" style={{background:"none",border:`1px solid ${C.bd}`,borderRadius:6,color:C.tx2,cursor:"pointer",fontSize:13,padding:"3px 7px"}} onClick={()=>setMsMove({mId:m.id})}>⇄</button>}
                 <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:18,padding:"2px 8px"}} onClick={()=>{if(confirm(`${U.label} ${m.wert} ${U.unit} löschen?`+(phs.length?` ${phs.length} verknüpfte(s) Foto(s) werden mitgelöscht.`:"")))delMs(rm.id,f.id,v.id,m.id);}}>×</button>
               </div>
               <ThumbRow photos={phs} title={msLabel(m)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/>
@@ -2044,7 +2057,10 @@ function App(){
     {!isV&&!fenSkizze(f)&&(mess||isA("geometrie"))&&<div style={{...$.card,padding:"8px 10px",display:"flex",alignItems:"center",gap:8}}><span style={{flex:1,fontSize:12,color:C.tx2}}>Aufteilung: keine Skizze · {(f.verglasungen||[]).length} Verglasung{(f.verglasungen||[]).length===1?"":"en"}</span><button style={{...$.btn,...$.bO,...$.bS,padding:"6px 10px"}} onClick={()=>guardNav(()=>setFenEd({fId:f.id}))}>✎ Aufteilung</button></div>}
     {mess&&msCard()}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
-    {secFs("aufbau").length>0&&<div style={$.card}><Sec title="Aufbau">{secFs("aufbau").map(vfld)}</Sec></div>}
+    {secFs("aufbau").length>0&&<div style={$.card}><Sec title="Aufbau">{secFs("aufbau").map(vfld)}
+      {!isV&&(f.verglasungen||[]).length>1&&secFs("aufbau").some(([k])=>String(v.data?.[k]??"").trim())&&<button style={{...$.btn,...$.bO,...$.bS,marginTop:4}} onClick={()=>{const keys=secFs("aufbau").map(([k])=>k),d=vgCopyDiff(f,v.id,keys),n=f.verglasungen.length-1;
+        if(!confirm(`Aufbau-Angaben von V${v.nr} auf die ${n} übrigen Verglasung${n===1?"":"en"} von ${f.nr} übertragen?`+(d.length?` Überschreibt: ${d.slice(0,6).map(x=>`V${x.nr} ${FIELDS[x.k]?.label||x.k}: ${x.alt} → ${x.neu}`).join("; ")}${d.length>6?" …":""}`:"")))return;
+        let c=0;mut(q=>{c=vgCopyData(gF(gR(q,rm.id),f.id),v.id,keys);});flash(c?`Aufbau auf ${c} Verglasung${c===1?"":"en"} übertragen`:"Schon überall gleich");}}>⇉ Auf alle Verglasungen von {f.nr} übertragen</button>}</Sec></div>}
     <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
     {!mess&&msCard()}
     {secFs("vkenn").length>0&&<div style={$.card}><Sec title="Kennwerte" collapsed summary={kennSum(secFs("vkenn"),v,f,v)}>{secFs("vkenn").map(vfld)}</Sec></div>}
@@ -2059,6 +2075,10 @@ function App(){
     {/* Add extra verglasung */}
     {isV&&<button style={{...$.btn,...$.bO,...$.bBl,marginTop:8}} onClick={addAndGoExtra}>+ Weitere Verglasung</button>}
   </div>
+  {msMove&&(()=>{const m=(v.messungen||[]).find(x=>x.id===msMove.mId);if(!m)return null;const U=MS_TYPES[msTyp(m)]||{unit:""};
+    return <div style={$.modal} onClick={()=>setMsMove(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:4}}>Messwert verschieben</div>
+      <div style={{fontSize:12,color:C.tx2,marginBottom:12}}>{m.wert} {U.unit} von V{v.nr} (samt Messfotos) zu:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+      {(f.verglasungen||[]).filter(x=>x.id!==v.id).map(x=><button key={x.id} style={{...$.btn,...$.bO,display:"flex",alignItems:"center",gap:6}} onClick={()=>{mut(q=>{msMoveIn(gF(gR(q,rm.id),f.id),v.id,x.id,m.id);});setMsMove(null);flash(`Messwert → V${x.nr}`);}}>V{x.nr} {vgBadge(p,f,x)}</button>)}</div></div></div>;})()}
   {/* Confirm dialog for unsaved data */}
   {confirmNav&&<ConfirmDialog message="Es gibt einen noch nicht gespeicherten Messwert im Ziffernblock. Ohne Speichern fortfahren?" onYes={()=>{setNumVal("");confirmNav.action();setConfirmNav(null);}} onNo={()=>setConfirmNav(null)}/>}
   {newFenModal()}{fenSheet()}{Toast}</div>;}
