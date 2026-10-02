@@ -1043,24 +1043,24 @@ function GeoSvg({geo,aspect,sel,onSel,verglasungen,highlightVg,mini}){
   return <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",maxHeight:mini?140:380,display:"block",margin:"0 auto",touchAction:"manipulation"}}>{rects}{seps}{syms}{grp}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={mini?1.5:4} rx={4} style={{pointerEvents:"none",...ns}}/></svg>;
 }
 // Fenstergeometrie – Teilungsbaum: Vorlage wählen oder Felder antippen (Öffnungsart, Bandseite, Rolle, Verglasung) und senkrecht/waagrecht teilen
-function GeoEditor({geo,onChange,verglasungen,onJump,onSyncVg,aspect}){
-  const g=normalizeGeo(geo),vgs=verglasungen||[];
+function GeoEditor({geo,onChange,verglasungen,onJump,onSync,aspect}){
+  const g=normalizeGeo(geo),vgs=verglasungen||[],fx={geometrie:geo,verglasungen:vgs},sk=fenSkizze(fx),vok=geoVgOk(fx);
   const[sel,setSel]=useState(null);
   const[showTpl,setShowTpl]=useState(geoIsLeaf(g.tree)&&!g.tree.art&&!g.tree.role&&!g.tree.vg);
   const cur=sel!=null&&geoNode(g,sel)?sel:null,node=cur!=null?geoNode(g,cur):null;   // ungültige Auswahl (Fremdänderung) wirkt wie „nichts gewählt"
   const leaves=geoLeaves(g),a=aspect||GEO_ASPECT_DEF,VW=a>=1?300:Math.round(300*a),VH=a>=1?Math.round(300/a):300;
   const box=cur!=null?geoLayout(g.tree,8,8,VW-16,VH-16).find(b=>b.path===cur):null,depth=cur?cur.split(".").length:0;
   const canSplit=dir=>!!(node&&geoIsLeaf(node)&&depth<GEO_MAX_DEPTH&&box&&(dir==="v"?box.w:box.h)>=24);
-  const upd=(ng,nextSel)=>{onChange(ng);if(nextSel!==undefined)setSel(nextSel);};
+  const upd=(ng,nextSel,op)=>{if(onChange(ng,op)===false)return;if(nextSel!==undefined)setSel(nextSel);};   // op: Art der Änderung (Verglasungen folgen der Skizze); false = abgebrochen
   const gb={...$.btn,...$.bS,minHeight:36,padding:"6px 10px",fontSize:12};
   const parentPath=cur?geoParentPath(cur):null,parent=cur?geoNode(g,parentPath):null,pidx=cur?geoIdx(cur):0,leafIdx=cur!=null?leaves.findIndex(l=>l.path===cur):-1;
   const stegBtns=(path,val)=>[["pfosten","Pfosten"],["stulp","Stulp"]].map(([k,l])=><button key={k} style={{...gb,...(val===k?$.bP:$.bO)}} onClick={()=>upd(geoSetNode(g,path,{steg:k}))}>{l}</button>);
   return <div>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>Fensteraufbau</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setShowTpl(x=>!x)}>Vorlagen {showTpl?"▴":"▾"}</button></div>
-    {showTpl&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(76px,1fr))",gap:6,marginBottom:8}}>{GEO_TEMPLATES.map(t=><div key={t.id} onClick={()=>{if(geoHasContent(g)&&!confirm("Vorhandene Öffnungsarten und Verglasungs-Zuordnungen werden durch die Vorlage ersetzt. Fortfahren?"))return;upd(t.make(),null);setShowTpl(false);}} style={{border:`1px solid ${C.bd}`,borderRadius:8,padding:4,cursor:"pointer",background:C.sf2,textAlign:"center"}}><GeoSvg mini geo={t.make()} aspect={t.aspect||GEO_ASPECT_DEF}/><div style={{fontSize:9,color:C.tx2,marginTop:2,lineHeight:1.2}}>{t.name}</div></div>)}</div>}
+    {showTpl&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(76px,1fr))",gap:6,marginBottom:8}}>{GEO_TEMPLATES.map(t=><div key={t.id} onClick={()=>{if((geoCellCount(g)>1||geoLeaves(g).some(l=>l.node.art))&&!confirm("Bisherige Aufteilung durch die Vorlage ersetzen? Die Verglasungen werden den neuen Feldern der Reihe nach zugeordnet."))return;upd(t.make(),null,{t:"tpl"});setShowTpl(false);}} style={{border:`1px solid ${C.bd}`,borderRadius:8,padding:4,cursor:"pointer",background:C.sf2,textAlign:"center"}}><GeoSvg mini geo={t.make()} aspect={t.aspect||GEO_ASPECT_DEF}/><div style={{fontSize:9,color:C.tx2,marginTop:2,lineHeight:1.2}}>{t.name}</div></div>)}</div>}
     <div style={{display:"flex",gap:6,marginBottom:6}}>
-      <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,true,"Oberlicht");upd(ng,"0");}}>+ Oberlicht</button>
-      <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,false,"Brüstung");upd(ng,String(ng.tree.kids.length-1));}}>+ Brüstung</button>
+      <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,true,"Oberlicht");upd(ng,"0",{t:"add"});}}>+ Oberlicht</button>
+      <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,false,"Brüstung");upd(ng,String(ng.tree.kids.length-1),{t:"add"});}}>+ Brüstung</button>
     </div>
     <GeoSvg geo={g} aspect={aspect} sel={cur} onSel={p=>setSel(p)} verglasungen={vgs}/>
     {node?<div style={{padding:8,background:C.sf2,borderRadius:8,margin:"6px 0"}}>
@@ -1071,20 +1071,26 @@ function GeoEditor({geo,onChange,verglasungen,onJump,onSyncVg,aspect}){
       {geoIsLeaf(node)&&<>
         <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>{["",...FEN_TYPEN].map(t=><button key={t||"x"} style={{...gb,flex:"1 1 30%",...((node.art||"")===t?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{art:t}))}>{t||"leer"}</button>)}</div>
         {GEO_BANDS[node.art]&&<div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Bandseite (Anschlag):</span>{GEO_BANDS[node.art].map(b=><button key={b} style={{...gb,...(node.band===b?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{band:b}))}>{BAND_L[b]}</button>)}<button style={{...gb,...(node.band?$.bO:$.bP)}} onClick={()=>upd(geoSetLeaf(g,cur,{band:""}))}>—</button></div>}
-        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Verglasung:</span>{vgs.map(v=><button key={v.id} style={{...gb,...(node.vg===v.id?$.bP:$.bO)}} onClick={()=>upd(geoSetLeaf(g,cur,{vg:v.id}))}>V{v.nr}</button>)}{node.vg&&<button style={{...gb,...$.bO}} onClick={()=>upd(geoSetLeaf(g,cur,{vg:""}))}>—</button>}{node.vg&&onJump&&<button style={{...gb,...$.bP}} onClick={()=>onJump(node.vg)}>→ öffnen</button>}{!vgs.length&&<span style={{fontSize:10,color:C.tx3}}>keine Verglasungen angelegt</span>}</div>
+        {sk?(()=>{const mine=vgs.find(v=>v.id===node.vg),others=vgs.filter(v=>v.id!==node.vg),nm=v=>(v.messungen||[]).length;
+          return <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Verglasung <b style={{color:C.tx}}>V{mine?mine.nr:"?"}</b>{mine&&nm(mine)?` (${nm(mine)} Messwert${nm(mine)===1?"":"e"})`:""}{others.length?" · Inhalt tauschen mit:":""}</span>
+            {others.map(v=><button key={v.id} title={`Inhalte (Messwerte, Fotos, Angaben) von V${mine?mine.nr:"?"} und V${v.nr} tauschen`} style={{...gb,...$.bO}} onClick={()=>upd(geoSwapVg(g,cur,v.id),undefined,{t:"pick",msg:`Inhalte V${mine?mine.nr:"?"} ⇄ V${v.nr} getauscht`})}>V{v.nr}{nm(v)?` · ${nm(v)}×`:""}</button>)}
+            {node.vg&&onJump&&<button style={{...gb,...$.bP}} onClick={()=>onJump(node.vg)}>→ öffnen</button>}</div>;})()
+        :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>{vgs.length} Verglasung{vgs.length===1?"":"en"} ohne Skizze – Vorlage wählen, dann werden sie den Feldern der Reihe nach zugeordnet</div>}
         <div style={{display:"flex",gap:4,marginBottom:6}}>
-          <button style={{...gb,...$.bO,flex:1,opacity:canSplit("v")?1:0.4}} disabled={!canSplit("v")} onClick={()=>upd(geoSplit(g,cur,"v"),geoPath(cur,0))}>⫿ senkrecht teilen</button>
-          <button style={{...gb,...$.bO,flex:1,opacity:canSplit("h")?1:0.4}} disabled={!canSplit("h")} onClick={()=>upd(geoSplit(g,cur,"h"),geoPath(cur,0))}>⫗ waagrecht teilen</button>
+          <button style={{...gb,...$.bO,flex:1,opacity:canSplit("v")?1:0.4}} disabled={!canSplit("v")} onClick={()=>upd(geoSplit(g,cur,"v"),geoPath(cur,0),{t:"split",path:cur})}>⫿ senkrecht teilen</button>
+          <button style={{...gb,...$.bO,flex:1,opacity:canSplit("h")?1:0.4}} disabled={!canSplit("h")} onClick={()=>upd(geoSplit(g,cur,"h"),geoPath(cur,0),{t:"split",path:cur})}>⫗ waagrecht teilen</button>
         </div>
       </>}
       <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Rolle:</span><select style={{...$.sel,...$.selS,flex:1}} value={node.role||""} onChange={e=>upd(geoSetNode(g,cur,{role:e.target.value}))}><option value="">— keine —</option>{ROW_ROLES.map(o=><option key={o}>{o}</option>)}</select></div>
       {parent&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Anteil:</span><button style={{...gb,...$.bO}} onClick={()=>upd(geoSetWeight(g,cur,-1))}>−</button><span style={{fontSize:12,minWidth:44,textAlign:"center"}}>{parent.w[pidx]} von {parent.w.reduce((x,y)=>x+y,0)}</span><button style={{...gb,...$.bO}} onClick={()=>upd(geoSetWeight(g,cur,1))}>+</button>
         {parent.dir==="v"&&<><span style={{fontSize:11,color:C.tx2,marginLeft:6}}>Trennung:</span>{stegBtns(parentPath,parent.steg)}</>}</div>}
       {!geoIsLeaf(node)&&node.dir==="v"&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Trennung in dieser Gruppe:</span>{stegBtns(cur,node.steg)}</div>}
-      {parent&&<button style={{...gb,...$.bO,color:C.err,borderColor:C.err+"60"}} onClick={()=>upd(geoRemove(g,cur),parentPath)}>🗑 {geoIsLeaf(node)?"Feld":"Gruppe"} entfernen</button>}
+      {parent&&<button style={{...gb,...$.bO,color:C.err,borderColor:C.err+"60"}} onClick={()=>upd(geoRemove(g,cur),parentPath,{t:"remove",path:cur})}>🗑 {geoIsLeaf(node)?"Feld":"Gruppe"} entfernen</button>}
     </div>
     :<div style={{fontSize:10,color:C.tx3,margin:"6px 0"}}>Vorlage wählen oder Feld antippen → Öffnungsart, Bandseite, Verglasung, teilen</div>}
-    {onSyncVg&&(()=>{const fc=leaves.length,lc=leaves.filter(l=>l.node.vg).length;return <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,marginBottom:6,flexWrap:"wrap"}}><span style={{fontSize:10,color:(vgs.length!==fc)?C.warn:C.tx3}}>Verglasungen: {vgs.length} · Felder: {fc} · verknüpft: {lc}</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px"}} onClick={onSyncVg}>aus Geometrie übernehmen</button></div>;})()}
+    {onSync&&(sk?(vok?<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>{leaves.length} Feld{leaves.length===1?"":"er"} = {vgs.length} Verglasung{vgs.length===1?"":"en"} ✓ (folgen der Skizze)</div>
+      :<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,marginBottom:6,flexWrap:"wrap"}}><span style={{fontSize:10,color:C.warn}}>Skizze und Verglasungen passen nicht zusammen ({leaves.length} Felder, {vgs.length} Verglasungen)</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 8px"}} onClick={onSync}>Abgleichen</button></div>)
+      :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>Ohne Skizze: {vgs.length} Verglasung{vgs.length===1?"":"en"} (die Zahl wird über «+ Verglasung» geführt)</div>)}
     <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:10,color:C.tx2}}>{FEN_TYPEN.map(t=><span key={t}><b style={{color:C.tx}}>{FEN_AB[t]}</b> {t}</span>)}</div>
   </div>;
 }
@@ -1353,8 +1359,17 @@ function App(){
 
   const addFen=(rId,nr,va)=>{mut(p=>{const r=gR(p,rId);if(!r)return;if(p.modus==="fenster"){r.fenster.push({id:uid(),nr:nr||`F${nextNr(r,"F")}`,verglasungen:Array.from({length:va||1},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),data:{},sources:{},photos:[],notizen:""});}else{r.fenster.push({id:uid(),nr:`V${nextNr(r,"V")}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});}});};
   const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({...vgNeu(),nr:(f.verglasungen.length||0)+1});}});
-  // „aus Geometrie übernehmen": fehlende Verglasungen anlegen (nie löschen), Felder in Lesereihenfolge positional zuordnen
-  const syncVgFromGeo=(rId,fId)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(!f||!f.geometrie)return;const g=normalizeGeo(f.geometrie),n=geoCellCount(g);if(!f.verglasungen)f.verglasungen=[];while(f.verglasungen.length<n)f.verglasungen.push({id:uid(),nr:f.verglasungen.length+1,messungen:[],data:{},sources:{},photos:[],notizen:""});f.geometrie=geoMapLeaves(g,(l,path,i)=>({...l,vg:f.verglasungen[i].id}));});flash("Aus Geometrie übernommen");};
+  // Skizze ändern: Verglasungen folgen (1 Feld = 1 Verglasung); vor dem Löschen von Verglasungen mit Inhalt oder unerwartet vielen nachfragen.
+  // op.ok = Rückfrage schon gestellt. Rückgabe false = abgebrochen
+  const geoEdit=(rId,fId,ng,op)=>{const cf=gF(gR(projRef.current,rId),fId);if(!cf)return false;const res=fenGeoApply(cf,ng,op);const rmv=res.removed;
+    if(rmv.length&&(rmv.length>res.expect||(!(op&&op.ok)&&rmv.some(v=>vgInhalt(v))))){const info=rmv.map(v=>{const i=vgInhalt(v);return `V${v.nr}${i?" ("+i+")":""}`;}).join(", ");
+      if(!confirm(`Dabei ${rmv.length===1?"wird eine Verglasung":"werden "+rmv.length+" Verglasungen"} gelöscht: ${info}. Fortfahren?`))return false;}
+    if(rmv.length)phDel(rmv.flatMap(v=>photoIdsIn(v)));
+    const vi=vg?(cf.verglasungen||[]).findIndex(v=>v.id===vg.id):-1;
+    mut(p=>{const f=gF(gR(p,rId),fId);if(!f)return;f.geometrie=res.geo;f.verglasungen=JSON.parse(JSON.stringify(res.verglasungen));});
+    if(vi>=0&&rmv.some(v=>v.id===vg.id)&&res.verglasungen.length){setVg(res.verglasungen[Math.min(vi,res.verglasungen.length-1)]);setNumVal("");}
+    if(op&&op.msg)flash(op.msg);else if(res.created||rmv.length)flash([res.created?`+${res.created} Verglasung${res.created===1?"":"en"}`:"",rmv.length?`−${rmv.length} Verglasung${rmv.length===1?"":"en"}`:""].filter(Boolean).join(" · "));
+    return true;};
   const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];delete c.pos;(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];delete f.pos;const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(f.geometrie)f.geometrie=geoRemapVg(f.geometrie,map);});return c;};
   const dupRoom=(rId,count)=>{mut(p=>{const idx=p.rooms.findIndex(x=>x.id===rId);if(idx<0)return;const r=p.rooms[idx];const N=Math.max(1,count|0||1);const taken=new Set(p.rooms.map(x=>x.raumnummer));const baseNm=r.raumnummer||r.raumId||"Raum";let n=2;for(let i=0;i<N;i++){const c=cloneRoomData(r);c.geschoss=r.geschoss;let nm;do{nm=`${baseNm} (${n})`;n++;}while(taken.has(nm));taken.add(nm);c.raumnummer=nm;p.rooms.splice(idx+1+i,0,c);}});flash("Raum dupliziert");};
   const cloneFenData=f=>{const c=JSON.parse(JSON.stringify(f));c.id=uid();c.photos=[];delete c.pos;const map={};(c.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(c.geometrie)c.geometrie=geoRemapVg(c.geometrie,map);return c;};
@@ -1366,7 +1381,10 @@ function App(){
   const inhalt=inhaltOf;
   // Fenster löschen (mit Verglasungen, Messwerten, Fotos und Verortungen)
   const delFen=(rId,fId)=>{const cf=gF(gR(projRef.current,rId),fId);if(cf)phDel(photoIdsIn(cf));mut(p=>{const r=gR(p,rId);if(r)r.fenster=(r.fenster||[]).filter(x=>x.id!==fId);});};
-  const delVg=(rId,fId,vId)=>{const cf=gF(gR(projRef.current,rId),fId);if(cf)phDel(cf.isVg||cf.verglasungen.length<=1?photoIdsIn(cf):photoIdsIn(gV(cf,vId)));mut(p=>{const r=gR(p,rId);if(!r)return;
+  const delVg=(rId,fId,vId)=>{const cf=gF(gR(projRef.current,rId),fId);
+    if(cf&&!cf.isVg&&(cf.verglasungen||[]).length>1&&fenSkizze(cf)){const lf=geoLeaves(cf.geometrie).find(l=>l.node.vg===vId);   // Skizze: Feld entfernen, Verglasungen folgen
+      if(lf&&lf.path!==""){geoEdit(rId,fId,geoRemove(cf.geometrie,lf.path),{t:"remove",path:lf.path,ok:true});return;}}
+    if(cf)phDel(cf.isVg||cf.verglasungen.length<=1?photoIdsIn(cf):photoIdsIn(gV(cf,vId)));mut(p=>{const r=gR(p,rId);if(!r)return;
     const f=gF(r,fId);if(!f)return;
     if(f.isVg||f.verglasungen.length<=1){r.fenster=r.fenster.filter(x=>x.id!==fId);} // remove whole pseudo-fenster or last vg
     else{f.verglasungen=f.verglasungen.filter(v=>v.id!==vId);f.verglasungen.forEach((v,i)=>{v.nr=i+1;});
@@ -1730,7 +1748,7 @@ function App(){
     const openVg=v=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setMsFrom(from==="fenster"&&fenFrom!=="measure"?"fenster":"");setView("measure");};
     const fld=(f,[k,d])=>{  // Feld eines Abschnitts rendern (Sonderfelder: Zustand Rahmen, Geometrie, Rahmenmaße)
       if(d.t==="zustand")return <ZustInp key={k} modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>;
-      if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv)openVg(vv);}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>;
+      if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={(ng,op)=>geoEdit(rm.id,f.id,ng,op)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv)openVg(vv);}} onSync={()=>geoEdit(rm.id,f.id,f.geometrie,{t:"sync"})}/></div>;
       if(d.t==="masse")return <div key={k} style={{marginBottom:8}}><label style={$.lbl}>{d.label}</label><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>;
       return <FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;};
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
@@ -1742,11 +1760,12 @@ function App(){
             <span style={{fontWeight:700,fontSize:13}}>Verglasung {v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:12}}>{fmtMs(lm)}</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}<span style={{marginLeft:"auto"}}>{vgBadge(p,f,v)}</span>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
-            <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:15,padding:"2px 6px"}} title="Verglasung löschen" onClick={()=>{const last=(f.verglasungen||[]).length<=1,i=inhalt(v);if(confirm(last?`Letzte Verglasung – Fenster ${f.nr} komplett löschen?`:`Verglasung ${v.nr} von ${f.nr} löschen?`+(i?` Sie enthält ${i}.`:"")))delVg(rm.id,f.id,v.id);}}>🗑</button>
+            <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:15,padding:"2px 6px"}} title="Verglasung löschen" onClick={()=>{const last=(f.verglasungen||[]).length<=1,i=inhalt(v);if(confirm(last?`Letzte Verglasung – Fenster ${f.nr} komplett löschen?`:`Verglasung ${v.nr} von ${f.nr}${fenSkizze(f)?" samt Feld in der Skizze":""} löschen?`+(i?` Sie enthält ${i}.`:"")))delVg(rm.id,f.id,v.id);}}>🗑</button>
             <span style={{color:C.tx3,cursor:"pointer"}} onClick={()=>openVg(v)}>›</span>
           </div>
         </div>;})}
-        <button style={{...$.btn,...$.bO,...$.bS,marginTop:2}} onClick={()=>addVgToFen(rm.id,f.id)}>+ Verglasung</button>
+        {fenSkizze(f)&&isA("geometrie")?<div style={{fontSize:11,color:C.tx3,marginTop:4}}>Weitere Verglasung: in der Skizze ein Feld teilen bzw. Vorlage wählen</div>
+          :<button style={{...$.btn,...$.bO,...$.bS,marginTop:2}} onClick={()=>addVgToFen(rm.id,f.id)}>+ Verglasung</button>}
         {secBlock(f,"fkenn")}
         <div style={{marginTop:8}}><label style={$.lbl}>Bemerkungen</label><DInp multiline style={{...$.inp,...$.inpS}} value={f.notizen||""} onCommit={t=>setNotiz(rm.id,f.id,null,t)} placeholder="Auffälligkeiten, Hinweise zum Fenster…"/></div></div>;};
 
@@ -1847,7 +1866,7 @@ function App(){
     const navRoom=()=>guardNav(()=>{setNumVal("");setView("room");});
     // Diese Verglasung löschen (letzte Verglasung = ganzes Fenster), danach zur Verglasung an derselben Stelle bzw. zurück in den Raum
     const delHere=()=>{const last=isV||(f.verglasungen||[]).length<=1,i=inhalt(v);
-      if(!confirm((last&&!isV?`Fenster ${f.nr} hat nur diese Verglasung – Fenster komplett löschen?`:`${isV?f.nr:"Verglasung "+v.nr+" von "+f.nr} löschen?`)+(i?` Enthält ${i}.`:"")))return;
+      if(!confirm((last&&!isV?`Fenster ${f.nr} hat nur diese Verglasung – Fenster komplett löschen?`:`${isV?f.nr:"Verglasung "+v.nr+" von "+f.nr+(fenSkizze(f)?" samt Feld in der Skizze":"")} löschen?`)+(i?` Enthält ${i}.`:"")))return;
       const rest=all.filter(x=>last?x.f.id!==f.id:x.v.id!==v.id),tgt=rest[Math.min(idx,rest.length-1)];delVg(rm.id,f.id,v.id);setNumVal("");flash("Gelöscht");
       const r2=gR(projRef.current,rm.id),f2=tgt&&gF(r2,tgt.f.id),v2=f2&&gV(f2,tgt.v.id);if(f2&&v2){setFen(f2);setVg(v2);}else setView("room");};
 
@@ -1906,10 +1925,10 @@ function App(){
       </div>;};
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={navBack}>{msFrom==="fenster"?"← Fenster":fromPlan?"← Plan":"← Raum"}</button><div style={$.hdrT}>{rm.raumnummer} · {label}</div>{!isV&&<button style={$.hdrB} title="Ganzes Fenster anzeigen" onClick={navFen}>🪟</button>}<button style={{...$.hdrB,color:C.err}} title={isV?"Eintrag löschen":"Verglasung löschen"} onClick={delHere}>🗑</button>{!isV&&hasPlanFor("fen",rm,f)&&<button style={$.hdrB} title="Im Plan zeigen / verorten" onClick={()=>guardNav(()=>planFor("fen",rm,f))}>🗺</button>}</div><div className="body" style={$.body}>
     <div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.tx2,marginBottom:3}}><span>Verglasung {idx+1}/{tot}</span><span>{msd}/{tot} {mess?"gemessen":"erfasst"}</span></div><div style={$.prog}><div style={$.progF(tot>0?(msd/tot)*100:0)}/></div></div>
-    {!isV&&isA("geometrie")&&f.geometrie&&(geoHasContent(f.geometrie)||geoCellCount(f.geometrie)>1)&&(()=>{const lf=geoLeaves(f.geometrie).find(l=>l.node.vg===v.id);  // Mini-Skizze: Feld dieser Verglasung hervorgehoben, Tippen springt zur anderen Verglasung
+    {!isV&&fenSkizze(f)&&(()=>{const lf=geoLeaves(f.geometrie).find(l=>l.node.vg===v.id);  // Mini-Skizze: Feld dieser Verglasung hervorgehoben, Tippen springt zur anderen Verglasung
       return <div style={{...$.card,padding:10,display:"flex",gap:12,alignItems:"center"}}>
         <div style={{width:130,flexShrink:0}}><GeoSvg mini geo={f.geometrie} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} verglasungen={f.verglasungen} highlightVg={v.id} onSel={(pth,n)=>{if(n.vg&&n.vg!==v.id){const i=all.findIndex(x=>x.v.id===n.vg);if(i>=0)navTo(i);}}}/></div>
-        <div style={{fontSize:11,color:C.tx2,lineHeight:1.5}}>{lf?<span>Feld: <b style={{color:C.tx}}>{lf.node.role||"Hauptfeld"}</b>{lf.node.art?` · ${lf.node.art}${lf.node.band?" ("+BAND_L[lf.node.band]+")":""}`:""}</span>:<span>Diese Verglasung ist keinem Feld zugeordnet (im Fenster „aus Geometrie übernehmen").</span>}<br/><span style={{color:C.tx3}}>Feld antippen = zu dieser Verglasung springen</span></div>
+        <div style={{fontSize:11,color:C.tx2,lineHeight:1.5}}>{lf?<span>Feld: <b style={{color:C.tx}}>{lf.node.role||"Hauptfeld"}</b>{lf.node.art?` · ${lf.node.art}${lf.node.band?" ("+BAND_L[lf.node.band]+")":""}`:""}</span>:<span>Diese Verglasung ist keinem Feld zugeordnet.</span>}{!geoVgOk(f)&&<><br/><span style={{color:C.warn}}>Skizze und Verglasungen passen nicht zusammen – im Fenster «Abgleichen».</span></>}<br/><span style={{color:C.tx3}}>Feld antippen = zu dieser Verglasung springen</span></div>
       </div>;})()}
     {mess&&msCard()}
     {isA("stempel")&&<div style={$.card}><div style={$.cardT}>Glasstempel</div><DInp style={{...$.inp,...$.inpS}} value={v.data?.stempel||""} onCommit={val=>setFV(rm.id,f.id,v.id,"stempel",val)} placeholder="Herstellerangaben"/><div style={{marginTop:6}}><Photos label="Stempel-Foto" photos={(v.photos||[]).filter(p=>p.isStempel)} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,isStempel:true})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div></div>}
