@@ -205,6 +205,49 @@ const GEO_TEMPLATES=[
   {id:"dk2ob",name:"2-flg + Oberl. + Brüst.",make:()=>({tree:_H([_Lf("Kipp","U","Oberlicht"),_V([_Lf("Dreh","L"),_Lf("Dreh-Kipp","R")],[1,1],"stulp"),_Lf("Fest","","Brüstung")],[1,3,1])})},
   {id:"leer",name:"Leer (1 Feld)",make:()=>newGeo()},
 ];
+// ── Skizze führt: bei Fenstern mit Skizze gehört zu jedem Feld genau eine Verglasung (Nummern in Skizzen-Reihenfolge) ──
+// Neue Verglasung; Vorlage tpl liefert Glasangaben samt Quelle (keine Messwerte, Fotos, Bemerkung, «nicht messbar»)
+function vgNeu(tpl){return {id:uid(),nr:0,messungen:[],data:{...((tpl&&tpl.data)||{})},sources:{...((tpl&&tpl.sources)||{})},photos:[],notizen:""};}
+// Skizze vorhanden = mehrere Felder oder ein verknüpftes Feld (nicht bei «Nur Verglasungen»); sonst führt die Zahl der Verglasungen
+function fenSkizze(f){if(!f||f.isVg||!f.geometrie)return false;const l=geoLeaves(f.geometrie);return l.length>1||l.some(x=>x.node.vg);}
+// Felder und Verglasungen stimmen 1:1 überein (gleiche Reihenfolge, Nummern 1..n)
+function geoVgOk(f){if(!fenSkizze(f))return true;const ids=geoLeaves(f.geometrie).map(l=>l.node.vg),vs=f.verglasungen||[];
+  return ids.length===vs.length&&new Set(ids).size===ids.length&&vs.every((v,i)=>v.id===ids[i]&&v.nr===i+1);}
+// Abgleich: erste gültige Verknüpfung je Feld zählt; freie Verglasungen füllen leere/doppelte Felder (Reparatur, Vorlagen);
+// fehlende werden mit tpl angelegt; übrige (und drop) gelten als entfernt. Verglasungen in Feld-Reihenfolge, nr 1..n. Verändert nichts.
+function geoSyncVg(geo,vgs,o){o=o||{};const g=normalizeGeo(geo),list=vgs||[],drop=new Set(o.drop||[]),byId={};list.forEach(v=>{byId[v.id]=v;});
+  const used=new Set(),own=geoLeaves(g).map(l=>{const id=l.node.vg;if(id&&byId[id]&&!drop.has(id)&&!used.has(id)){used.add(id);return id;}return "";});
+  const free=list.filter(v=>!used.has(v.id)&&!drop.has(v.id));let created=0;
+  const ids=own.map(id=>{if(id)return id;const v=free.shift();if(v)return v.id;const nv=vgNeu(o.tpl);byId[nv.id]=nv;created++;return nv.id;});
+  let i=0;const ng=geoMapLeaves(g,l=>({...l,vg:ids[i++]}));
+  return {geo:ng,verglasungen:ids.map((id,j)=>({...byId[id],nr:j+1})),removed:[...free,...list.filter(v=>drop.has(v.id))],created};}
+// Skizzen-Änderung auf ein Fenster anwenden. op.t: split|remove|tpl|add|pick|sync (ohne op: nur Öffnungsart/Band/Rolle/Anteil → Verglasungen bleiben)
+// Rückgabe zusätzlich expect = Zahl der gewollt entfernten Verglasungen (Feld entfernen); mehr entfernte → Rückfrage
+function fenGeoApply(f,ng,op){const vgs=(f&&f.verglasungen)||[];if(!f||f.isVg||!op)return {geo:ng,verglasungen:vgs,removed:[],created:0,expect:0};
+  const old=normalizeGeo(f.geometrie);let tpl=vgs[0],drop=[];
+  if(op.t==="split"){const n=geoNode(old,op.path);const v=n&&geoIsLeaf(n)&&vgs.find(x=>x.id===n.vg);if(v)tpl=v;}
+  if(op.t==="remove"){const n=geoNode(old,op.path);if(n){const still=new Set(geoLeaves(ng).map(l=>l.node.vg));drop=[...new Set(geoLeaves({tree:n}).map(l=>l.node.vg))].filter(id=>id&&!still.has(id));}}
+  return {...geoSyncVg(ng,vgs,{tpl,drop}),expect:drop.filter(id=>vgs.some(v=>v.id===id)).length};}
+// Feld path bekommt Verglasung vgId; das Feld, das sie bisher hatte, bekommt die bisherige Verglasung von path (Tauschen, keine Doppelten)
+function geoSwapVg(g,path,vgId){const n=geoNode(normalizeGeo(g),path);if(!n||!geoIsLeaf(n))return normalizeGeo(g);const old=n.vg||"";let done=false;
+  return geoMapLeaves(g,(l,p)=>p===path?{...l,vg:vgId}:(vgId&&l.vg===vgId&&!done?(done=true,{...l,vg:old}):l));}
+// Raster c Spalten × r Zeilen; Standard Spalten durchgehend (Nummern spaltenweise), zeilen:true = Zeilen durchgehend
+function geoRaster(c,r,o){c=Math.min(8,Math.max(1,c|0||1));r=Math.min(8,Math.max(1,r|0||1));const L=()=>geoLeaf();
+  const line=(n,dir)=>n===1?L():dir==="v"?_V(Array.from({length:n},L)):_H(Array.from({length:n},L));
+  const t=o&&o.zeilen?(r===1?line(c,"v"):_H(Array.from({length:r},()=>line(c,"v")))):(c===1?line(r,"h"):_V(Array.from({length:c},()=>line(r,"h"))));
+  return normalizeGeo({tree:t});}
+function geoStructOf(g){return geoMapLeaves(g,l=>({...l,vg:""}));}   // Aufbau ohne Verglasungs-Zuordnung
+// Vorbilder für «wie Fenster …»: andere Fenster mit Skizze, gleicher Aufbau nur einmal, eigener Raum zuerst
+function geoVorbilder(p,fId){const rs=(p&&p.rooms)||[],own=rs.find(r=>(r.fenster||[]).some(f=>f.id===fId)),seen=new Set(),out=[];
+  [own,...rs.filter(r=>r!==own)].filter(Boolean).forEach(r=>(r.fenster||[]).forEach(f=>{if(f.id===fId||!fenSkizze(f))return;const geo=geoStructOf(f.geometrie),sig=JSON.stringify(geo);if(seen.has(sig))return;seen.add(sig);
+    out.push({fId:f.id,label:(f.nr||"?")+(r===own?"":" · "+(r.raumnummer||r.raumId||"")),geo,n:geoCellCount(geo),eigen:r===own});}));return out;}
+// Inhalt einer Verglasung (für Rückfragen); Angaben mit Quelle P (Planungsdaten) zählen nicht
+function vgInhalt(v){if(!v)return "";const ms=(v.messungen||[]).length,ph=(v.photos||[]).length,dat=Object.entries(v.data||{}).some(([k,x])=>x!=null&&String(x).trim()&&(v.sources||{})[k]!=="P");
+  return [ms?`${ms} Messwert${ms===1?"":"e"}`:"",ph?`${ph} Foto${ph===1?"":"s"}`:"",(v.notizen||"").trim()?"Bemerkung":"",dat?"Angaben":"",v.msSkip&&Object.keys(v.msSkip).length?"nicht messbar":""].filter(Boolean).join(", ");}
+// Inhalt eines Raums, Fensters oder einer Verglasung für Lösch-Rückfragen
+function inhaltOf(o){if(!o)return "";const fs=o.fenster||null,vs=fs?fs.flatMap(f=>f.verglasungen||[]):o.verglasungen?o.verglasungen:[o];
+  const ms=vs.reduce((a,v)=>a+(v.messungen||[]).length,0),ph=photoIdsIn(o).length;
+  return [fs?`${fs.length} Fenster`:"",(fs||o.verglasungen)?`${vs.length} Verglasung${vs.length===1?"":"en"}`:"",ms?`${ms} Messwert${ms===1?"":"e"}`:"",ph?`${ph} Foto${ph===1?"":"s"}`:""].filter(Boolean).join(", ");}
 function masseSummary(m){if(!m)return "";const ab={oben:"O",unten:"U",links:"L",rechts:"R",mittelV:"MV",mittelH:"MH"};return RM_POS.map(([k])=>{const v=m[k]||{};const i=v.i||"",a=v.a||"";return (i||a)?ab[k]+" "+(i||"-")+"/"+(a||"-"):"";}).filter(Boolean).join(" · ");}
 
 // Fields that support project-level defaults
@@ -421,7 +464,7 @@ const fenPad=doc=>fenPrefix(doc)==="F"?0:2;
 function nextFenNr(r,prefix,pad){let mx=0,w=pad||0;((r&&r.fenster)||[]).forEach(f=>{const s=String(f.nr||""),rest=s.slice(prefix.length);
     if(s.startsWith(prefix)&&/^\d+$/.test(rest)){mx=Math.max(mx,+rest);w=Math.max(w,rest.length);}});return prefix+String(mx+1).padStart(w,"0");}
 function incNr(nr){const m=String(nr||"").match(/^(.*?)(\d+)$/);return m?m[1]+String(+m[2]+1).padStart(m[2].length,"0"):(nr||"F")+"2";}
-function makeFenster({nr,nVg,data,isVg}){const f={id:uid(),nr:nr||"F1",verglasungen:Array.from({length:Math.max(1,nVg|0||1)},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),
+function makeFenster({nr,nVg,data,isVg}){const f={id:uid(),nr:nr||"F1",verglasungen:Array.from({length:Math.max(1,nVg|0||1)},(_,i)=>({...vgNeu(),nr:i+1})),
   data:{...(data||{})},sources:{},photos:[],notizen:""};if(isVg)f.isVg=1;return f;}
 // Raum-Vorschlag für ein im Plan angelegtes Fenster: Grundriss → nächster verorteter Raum; Ansicht → Raum mit den meisten Fenstern dieser Fassade
 function suggestRoom(p,doc,x,y){const rs=p.rooms||[];
@@ -1309,7 +1352,7 @@ function App(){
   const delRoom=rId=>{phDel(photoIdsIn(gR(projRef.current,rId)));mut(p=>{p.rooms=p.rooms.filter(r=>r.id!==rId);});if(room?.id===rId){setRoom(null);setView("survey");}};
 
   const addFen=(rId,nr,va)=>{mut(p=>{const r=gR(p,rId);if(!r)return;if(p.modus==="fenster"){r.fenster.push({id:uid(),nr:nr||`F${nextNr(r,"F")}`,verglasungen:Array.from({length:va||1},(_,i)=>({id:uid(),nr:i+1,messungen:[],data:{},sources:{},photos:[],notizen:""})),data:{},sources:{},photos:[],notizen:""});}else{r.fenster.push({id:uid(),nr:`V${nextNr(r,"V")}`,isVg:1,verglasungen:[{id:uid(),nr:1,messungen:[],data:{},sources:{},photos:[],notizen:""}],data:{},sources:{},photos:[],notizen:""});}});};
-  const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({id:uid(),nr:(f.verglasungen.length||0)+1,messungen:[],data:{},sources:{},photos:[],notizen:""});}});
+  const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({...vgNeu(),nr:(f.verglasungen.length||0)+1});}});
   // „aus Geometrie übernehmen": fehlende Verglasungen anlegen (nie löschen), Felder in Lesereihenfolge positional zuordnen
   const syncVgFromGeo=(rId,fId)=>{mut(p=>{const f=gF(gR(p,rId),fId);if(!f||!f.geometrie)return;const g=normalizeGeo(f.geometrie),n=geoCellCount(g);if(!f.verglasungen)f.verglasungen=[];while(f.verglasungen.length<n)f.verglasungen.push({id:uid(),nr:f.verglasungen.length+1,messungen:[],data:{},sources:{},photos:[],notizen:""});f.geometrie=geoMapLeaves(g,(l,path,i)=>({...l,vg:f.verglasungen[i].id}));});flash("Aus Geometrie übernommen");};
   const cloneRoomData=room=>{const c=JSON.parse(JSON.stringify(room));c.id=uid();c.photos=[];delete c.pos;(c.fenster||[]).forEach(f=>{f.id=uid();f.photos=[];delete f.pos;const map={};(f.verglasungen||[]).forEach(v=>{const o=v.id;v.id=uid();map[o]=v.id;v.messungen=[];v.photos=[];delete v.msSkip;});if(f.geometrie)f.geometrie=geoRemapVg(f.geometrie,map);});return c;};
@@ -1320,8 +1363,7 @@ function App(){
 
   // Delete Verglasung (in Vg mode = delete fenster entry, in Fen mode = remove from verglasungen array)
   // Inhalt eines Fensters/einer Verglasung für die Lösch-Rückfrage
-  const inhalt=o=>{const vs=o.verglasungen?o.verglasungen:[o];const ms=vs.reduce((a,v)=>a+(v.messungen||[]).length,0),ph=photoIdsIn(o).length;
-    return [o.verglasungen?`${vs.length} Verglasung${vs.length===1?"":"en"}`:"",ms?`${ms} Messwert${ms===1?"":"e"}`:"",ph?`${ph} Foto${ph===1?"":"s"}`:""].filter(Boolean).join(", ");};
+  const inhalt=inhaltOf;
   // Fenster löschen (mit Verglasungen, Messwerten, Fotos und Verortungen)
   const delFen=(rId,fId)=>{const cf=gF(gR(projRef.current,rId),fId);if(cf)phDel(photoIdsIn(cf));mut(p=>{const r=gR(p,rId);if(r)r.fenster=(r.fenster||[]).filter(x=>x.id!==fId);});};
   const delVg=(rId,fId,vId)=>{const cf=gF(gR(projRef.current,rId),fId);if(cf)phDel(cf.isVg||cf.verglasungen.length<=1?photoIdsIn(cf):photoIdsIn(gV(cf,vId)));mut(p=>{const r=gR(p,rId);if(!r)return;
