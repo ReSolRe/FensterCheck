@@ -485,6 +485,18 @@ function moveFenIn(p,fId,toRId){const hit=findFen(p,fId),to=((p&&p.rooms)||[]).f
 function incNr(nr){const m=String(nr||"").match(/^(.*?)(\d+)$/);return m?m[1]+String(+m[2]+1).padStart(m[2].length,"0"):(nr||"F")+"2";}
 function makeFenster({nr,nVg,data,isVg}){const f={id:uid(),nr:nr||"F1",verglasungen:Array.from({length:Math.max(1,nVg|0||1)},(_,i)=>({...vgNeu(),nr:i+1})),
   data:{...(data||{})},sources:{},photos:[],notizen:""};if(isVg)f.isVg=1;return f;}
+// ── Neues Fenster mit Aufteilung: t = {k:"n",n} ohne Skizze | {k:"raster",c,r,zeilen} | {k:"tpl",id} | {k:"wie",fId} ──
+function teilungGeo(t,p){if(!t||t.k==="n")return null;if(t.k==="raster")return geoRaster(t.c,t.r,{zeilen:t.zeilen});
+  if(t.k==="tpl"){const x=GEO_TEMPLATES.find(z=>z.id===t.id);return x?normalizeGeo(x.make()):null;}
+  if(t.k==="wie"){const h=findFen(p,t.fId);return h&&fenSkizze(h.f)?geoStructOf(h.f.geometrie):null;}return null;}
+function teilungN(t,p){const g=teilungGeo(t,p);return g?geoCellCount(g):Math.min(30,Math.max(1,(t&&t.n)|0||1));}
+function makeFensterT({nr,data,teilung,p,isVg}){if(isVg)return makeFenster({nr,nVg:1,data,isVg:true});const g=teilungGeo(teilung,p),f=makeFenster({nr,nVg:g?1:teilungN(teilung,p),data});
+  if(g){const res=geoSyncVg(g,f.verglasungen);f.geometrie=res.geo;f.verglasungen=res.verglasungen;}return f;}
+// Nummern-Vorschläge für ein neues Fenster: Schema; sonst nach dem Vorbild und je Nummernstamm im Raum die nächste freie (max. 4)
+function fenNrChips(p,rId,refNr){const r=((p&&p.rooms)||[]).find(x=>x.id===rId),out=[],add=x=>{if(x&&!out.includes(x))out.push(x);};
+  if(p&&p.nrSchema==="raum"){add(suggestFenNr(p,rId));return out;}
+  if(refNr)add(suggestFenNr(p,rId,refNr));const last={};((r&&r.fenster)||[]).filter(f=>!f.isVg).forEach(f=>{last[String(f.nr||"").replace(/\d+$/,"")]=f.nr;});
+  Object.values(last).reverse().forEach(nr=>add(suggestFenNr(p,rId,nr)));if(!out.length)add(suggestFenNr(p,rId));return out.slice(0,4);}
 // Raum-Vorschlag für ein im Plan angelegtes Fenster: Grundriss → nächster verorteter Raum; Ansicht → Raum mit den meisten Fenstern dieser Fassade
 function suggestRoom(p,doc,x,y){const rs=p.rooms||[];
   if(doc.art==="grundriss"){let best=null,bd=1e9;rs.forEach(r=>{const q=posOn(r,doc.id);if(!q)return;const d=Math.hypot((q.x-x)*(doc.w||1),(q.y-y)*(doc.h||1));if(d<bd){bd=d;best=r;}});
@@ -1062,6 +1074,20 @@ function GeoSvg({geo,aspect,sel,onSel,verglasungen,highlightVg,mini}){
   return <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",maxHeight:mini?140:380,display:"block",margin:"0 auto",touchAction:"manipulation"}}>{rects}{seps}{syms}{grp}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={mini?1.5:4} rx={4} style={{pointerEvents:"none",...ns}}/></svg>;
 }
 // Fenstergeometrie – Teilungsbaum: Vorlage wählen oder Felder antippen (Öffnungsart, Bandseite, Rolle, Verglasung) und senkrecht/waagrecht teilen
+// Auswahl der Aufteilung beim Anlegen: wie Vorbild | 1–4 Verglasungen ohne Skizze | Raster | Vorlage
+function TeilungPick({p,value,onChange,refF,aspect}){const t=value||{k:"n",n:1},gb={...$.btn,...$.bS,minHeight:36,padding:"6px 10px",fontSize:12};
+  const g=teilungGeo(t,p),n=teilungN(t,p),refOk=refF&&fenSkizze(refF),rc=t.k==="raster"?t:{c:2,r:1,zeilen:false};
+  return <div style={{marginBottom:10}}><label style={$.lbl}>Aufteilung</label>
+    <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
+      {refOk&&<button style={{...gb,...(t.k==="wie"?$.bP:$.bO)}} onClick={()=>onChange({k:"wie",fId:refF.id})}>wie {refF.nr}</button>}
+      {[1,2,3,4].map(k=><button key={k} style={{...gb,...(t.k==="n"&&(t.n||1)===k?$.bP:$.bO)}} onClick={()=>onChange({k:"n",n:k})}>{k} Vgl.</button>)}
+      <button style={{...gb,...(t.k==="raster"?$.bP:$.bO)}} onClick={()=>onChange({k:"raster",c:rc.c,r:rc.r,zeilen:rc.zeilen})}>Raster</button>
+      <select style={{...$.sel,...$.selS,flex:"1 1 110px",...(t.k==="tpl"?{borderColor:C.ac}:{})}} value={t.k==="tpl"?t.id:""} onChange={e=>e.target.value&&onChange({k:"tpl",id:e.target.value})}><option value="">Vorlage …</option>{GEO_TEMPLATES.filter(x=>x.id!=="leer").map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></div>
+    {t.k==="raster"&&<div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:6}}>
+      {[["c","Spalte","Spalten"],["r","Zeile","Zeilen"]].map(([k,l1,l2])=><span key={k} style={{display:"inline-flex",alignItems:"center",gap:3}}><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>onChange({...t,[k]:Math.max(1,t[k]-1)})}>−</button><span style={{fontSize:12,minWidth:56,textAlign:"center"}}>{t[k]} {t[k]===1?l1:l2}</span><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>onChange({...t,[k]:Math.min(8,t[k]+1)})}>+</button></span>)}
+      {t.c>1&&t.r>1&&<button style={{...gb,...$.bO}} onClick={()=>onChange({...t,zeilen:!t.zeilen})}>{t.zeilen?"Zeilen durchgehend":"Spalten durchgehend"} ⇄</button>}</div>}
+    <div style={{display:"flex",alignItems:"center",gap:8}}>{g&&<div style={{width:56}}><GeoSvg mini geo={g} aspect={aspect||GEO_ASPECT_DEF}/></div>}<span style={{fontSize:11,color:C.tx2}}>{g?`${n} Felder = ${n} Verglasungen (Öffnungsarten danach in der Skizze)`:`${n} Verglasung${n===1?"":"en"}, ohne Skizze`}</span></div>
+  </div>;}
 function GeoEditor({geo,onChange,verglasungen,onJump,onSync,onClear,getVorbilder,aspect}){
   const g=normalizeGeo(geo),vgs=verglasungen||[],fx={geometrie:geo,verglasungen:vgs},sk=fenSkizze(fx),vok=geoVgOk(fx);
   const[sel,setSel]=useState(null);
@@ -1174,7 +1200,7 @@ function App(){
   const[modal,setModal]=useState(null);
   const[toast,setToast]=useState(null);
   const[fmR,setFmR]=useState({geschoss:"EG",raumnummer:"",raumId:""});
-  const[fmF,setFmF]=useState({nr:"",va:2});
+  
   const[impTxt,setImpTxt]=useState("");
   const[loading,setLoading]=useState(true);
   const[collapsed,setCollapsed]=useState({}); // floor collapse state
@@ -1197,7 +1223,7 @@ function App(){
   // Plan-Ansicht: gewählte Unterlage, Bearbeiten-Modus, Werkzeug (nav|punkt|rechteck), Auswahl zum Verorten, Fokus, Rücksprung
   const[planId,setPlanId]=useState(null);const[planEdit,setPlanEdit]=useState(false);const[planTool,setPlanTool]=useState("nav");
   const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planRet,setPlanRet]=useState({view:"survey"});   // Rücksprung aus dem Plan: Ansicht + Raum/Fenster/Verglasung beim ersten Öffnen
-  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
+  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);const[newF,setNewF]=useState(null);   // newF: Dialog «Neues Fenster» {rId,refId,nr,teilung}   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
   const[planNew,setPlanNew]=useState(null);
   const[planSerie,setPlanSerie]=useState(null);   // Serienmodus beim Anlegen im Plan {rId,lastNr,nVg}
   const[fromPlan,setFromPlan]=useState(false);
@@ -1282,7 +1308,7 @@ function App(){
   // Fenster im Plan anlegen (optional mit neuem Raum) und gleich verorten; liefert {rId,nr}
   const createFenAt=(docId,q,o)=>{let res=null;mut(p=>{let r=o.rId&&gR(p,o.rId);
       if(!r&&o.newRoom){r={id:uid(),trakt:o.newRoom.trakt||"",geschoss:o.newRoom.geschoss||"EG",raumnummer:o.newRoom.raumnummer,raumId:"",fenster:[],photos:[]};p.rooms.push(r);p.trakte=traktList(p);}
-      if(!r)return;const f=p.modus==="verglasung"?makeFenster({nr:`V${nextNr(r,"V")}`,nVg:1,isVg:true}):makeFenster({nr:o.nr,nVg:o.nVg,data:o.fassade?{fassade:o.fassade}:{}});
+      if(!r)return;const f=p.modus==="verglasung"?makeFenster({nr:`V${nextNr(r,"V")}`,nVg:1,isVg:true}):makeFensterT({nr:o.nr,teilung:o.teilung||{k:"n",n:o.nVg||1},p,data:o.fassade?{fassade:o.fassade}:{}});
       setPosIn(f,docId,q);(r.fenster=r.fenster||[]).push(f);res={rId:r.id,nr:f.nr};});return res;};
   const setPos=(kind,rId,fId,docId,q)=>mut(p=>{const r=gR(p,rId);if(!r)return;const o=kind==="room"?r:gF(r,fId);if(o)setPosIn(o,docId,q);});
   // Raum bzw. Fenster aus dem Plan öffnen (Fenster: erste noch offene Verglasung)
@@ -1463,6 +1489,24 @@ function App(){
   const Toast=(toast||busyMsg)?<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:C.sf2,color:C.tx,padding:"9px 18px",borderRadius:8,fontSize:14,fontWeight:600,zIndex:300,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",border:`1px solid ${C.bd}`}}>{busyMsg||toast}</div>:null;
 
   // HOME
+  // Dialog «Neues Fenster» (Raum, Fensteransicht, Messung): Nummer nach Vorbild/Schema, Aufteilung gleich beim Anlegen, danach öffnen
+  const openNewFen=(rId,refF)=>{const p=projRef.current;setNewF({rId,refId:refF?refF.id:"",nr:fenNrChips(p,rId,refF&&refF.nr)[0]||suggestFenNr(p,rId),
+    teilung:refF&&fenSkizze(refF)?{k:"wie",fId:refF.id}:{k:"n",n:Math.max(1,((refF&&refF.verglasungen)||[]).length||1)}});};
+  const createNewFen=()=>{const n=newF,p=projRef.current,r=gR(p,n.rId);if(!r)return;const nr=(n.nr||"").trim()||suggestFenNr(p,n.rId),ref=n.refId&&gF(r,n.refId);
+    if(fenNrDup(p,nr,null,n.rId).length&&!confirm(`Fenster ${nr} gibt es schon. Trotzdem anlegen?`))return;
+    let nf=null;mut(q=>{const rr=gR(q,n.rId);if(!rr)return;nf=makeFensterT({nr,teilung:n.teilung,p:q,data:ref&&ref.data&&ref.data.fassade?{fassade:ref.data.fassade}:{}});(rr.fenster=rr.fenster||[]).push(nf);});
+    setNewF(null);if(!nf)return;const r2=gR(projRef.current,n.rId),f2=gF(r2,nf.id);flash(`Fenster ${nr} angelegt`);
+    setRoom(r2);setFen(f2);setNumVal("");if(profMess(p)&&f2.verglasungen.length){setVg(f2.verglasungen[0]);setMsFrom("");setView("measure");}else{setFenFrom("room");setView("fenster");}};
+  const newFenModal=()=>{if(!newF||!proj)return null;const p=proj,n=newF,r=gR(p,n.rId);if(!r)return null;const ref=n.refId?gF(r,n.refId):null,upd=o=>setNewF({...n,...o});
+    const chips=fenNrChips(p,n.rId,ref&&ref.nr),dup=fenNrDup(p,n.nr,null,n.rId).length>0;
+    return <div style={$.modal} onClick={()=>setNewF(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/>
+      <div style={{fontWeight:800,fontSize:16,marginBottom:10}}>Neues Fenster in {r.raumnummer||r.raumId}</div>
+      <div style={{marginBottom:6}}><label style={$.lbl}>Fenster-Nr. / Bezeichnung</label><input style={$.inp} value={n.nr} onChange={e=>upd({nr:e.target.value})}/></div>
+      <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:dup?4:10}}>{chips.filter(c=>c!==n.nr).map(c=><button key={c} style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>upd({nr:c})}>{c}</button>)}</div>
+      {dup&&<div style={{fontSize:11,color:C.warn,marginBottom:10}}>⚠ Diese Nummer gibt es schon.</div>}
+      <TeilungPick p={p} value={n.teilung} onChange={t=>upd({teilung:t})} refF={ref}/>
+      <button style={{...$.btn,...$.bP,...$.bBl}} onClick={createNewFen}>Anlegen und öffnen</button></div></div>;};
+
   // Blatt «Fenster bearbeiten» über der aktuellen Ansicht (Messung, Fenster, Raum, Plan): Nummer, Raum, Aufteilung, Duplizieren, Plan, Löschen.
   // Schließen lässt Ansicht und Verglasung, wo sie waren.
   const fenSheet=()=>{if(!fenEd||!proj)return null;const p=proj,hit=findFen(p,fenEd.fId);if(!hit)return null;const rm=hit.r,f=hit.f;
@@ -1560,9 +1604,9 @@ function App(){
       if(was)setPlanSel(null);else advance();};
     // Neues Fenster/neuer Raum an der Stelle q (Punkt oder Rechteck); Serie: direkt das nächste Fenster ohne Rückfrage
     const openNew=(q,kind)=>{const r=suggestRoom(p,doc,q.x+(q.w||0)/2,q.y+(q.h||0)/2);
-      setPlanNew({...q,kind,raumnummer:"",raumId:"",rId:r?r.id:"",nr:r?nextFenNr(r,fenPrefix(doc),fenPad(doc)):fenPrefix(doc)+(fenPad(doc)?"01":"1"),nVg:1,serie:false,nrRaum:"",geschoss:doc.geschoss||"EG"});};
+      setPlanNew({...q,kind,raumnummer:"",raumId:"",rId:r?r.id:"",nr:r&&p.nrSchema==="raum"?suggestFenNr(p,r.id):r?nextFenNr(r,fenPrefix(doc),fenPad(doc)):fenPrefix(doc)+(fenPad(doc)?"01":"1"),teilung:{k:"n",n:1},serie:false,nrRaum:"",geschoss:doc.geschoss||"EG"});};
     const serieAt=q=>{const s=planSerie,r=gR(p,s.rId);if(!r){setPlanSerie(null);return;}let nr=incNr(s.lastNr);while((r.fenster||[]).some(f=>f.nr===nr))nr=incNr(nr);
-      const res=createFenAt(doc.id,q,{rId:s.rId,nr,nVg:s.nVg,fassade:isG?"":doc.fassade||""});if(res){setPlanSerie({...s,lastNr:res.nr});flash(`Fenster ${res.nr} angelegt`);}};
+      const res=createFenAt(doc.id,q,{rId:s.rId,nr,teilung:s.teilung,fassade:isG?"":doc.fassade||""});if(res){setPlanSerie({...s,lastNr:res.nr});flash(`Fenster ${res.nr} angelegt`);}};
     const tapEmpty=(x,y)=>{if(!planEdit)return;if(planSel){if(planTool==="punkt"){place({x,y});return;}if(planTool==="rechteck"){flash("Rechteck aufziehen");return;}}
       if(planTool==="nav")return;if(planSerie&&planTool==="punkt"){serieAt({x,y});return;}
       if(isG)openNew({x,y},markers.some(m=>m.kind==="room")?"fenster":"raum");else flash("Rechteck aufziehen, um ein Fenster anzulegen");};
@@ -1600,13 +1644,13 @@ function App(){
           <button style={{...$.btn,...$.bO}} onClick={()=>{const m=planMenu;setPlanMenu(null);setPlanSel({kind:m.kind,rId:m.rId,fId:m.fId,label:m.label});setPlanTool(m.w?"rechteck":"punkt");flash(m.w?"Neues Rechteck aufziehen":"Neue Stelle antippen");}}>Verschieben</button>
           <button style={{...$.btn,...$.bO,color:C.err}} onClick={()=>{const m=planMenu;setPlanMenu(null);setPos(m.kind,m.rId,m.fId,doc.id,null);flash("Verortung entfernt");}}>Verortung entfernen</button></div></div></div>}
       {planNew&&(()=>{const n=planNew,upd=o=>setPlanNew({...n,...o}),isF=n.kind==="fenster",rooms=sortedRooms(p);
-        const sug=rid=>{const r=rid&&gR(p,rid);return r?nextFenNr(r,fenPrefix(doc),fenPad(doc)):fenPrefix(doc)+(fenPad(doc)?"01":"1");};
+        const sug=rid=>{const r=rid&&gR(p,rid);return r&&p.nrSchema==="raum"?suggestFenNr(p,rid):r?nextFenNr(r,fenPrefix(doc),fenPad(doc)):fenPrefix(doc)+(fenPad(doc)?"01":"1");};
         const save=()=>{if(!isF){if(!n.raumnummer.trim()&&!n.raumId.trim()){flash("Bezeichnung angeben");return;}
             mut(pp=>{pp.rooms.push({id:uid(),trakt:doc.trakt||"",geschoss:doc.geschoss||"EG",raumnummer:n.raumnummer.trim(),raumId:n.raumId.trim(),fenster:[],photos:[],pos:[{docId:doc.id,x:n.x,y:n.y}]});pp.trakte=traktList(pp);});setPlanNew(null);flash("Raum angelegt und verortet");return;}
           if(!n.rId&&!n.nrRaum.trim()){flash("Raum wählen oder neuen Raum benennen");return;}
           const q=n.w!=null?{x:n.x,y:n.y,w:n.w,h:n.h}:{x:n.x,y:n.y};
-          const res=createFenAt(doc.id,q,{rId:n.rId,newRoom:n.rId?null:{raumnummer:n.nrRaum.trim(),geschoss:n.geschoss,trakt:doc.trakt||""},nr:(n.nr||"").trim()||sug(n.rId),nVg:n.nVg,fassade:isG?"":doc.fassade||""});
-          setPlanNew(null);if(!res)return;flash(`Fenster ${res.nr} angelegt und verortet`);if(n.serie)setPlanSerie({rId:res.rId,lastNr:res.nr,nVg:n.nVg});};
+          const res=createFenAt(doc.id,q,{rId:n.rId,newRoom:n.rId?null:{raumnummer:n.nrRaum.trim(),geschoss:n.geschoss,trakt:doc.trakt||""},nr:(n.nr||"").trim()||sug(n.rId),teilung:n.teilung,fassade:isG?"":doc.fassade||""});
+          setPlanNew(null);if(!res)return;flash(`Fenster ${res.nr} angelegt und verortet`);if(n.serie)setPlanSerie({rId:res.rId,lastNr:res.nr,teilung:n.teilung});};
         return <div style={$.modal} onClick={()=>setPlanNew(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/>
           <div style={{fontWeight:800,fontSize:16,marginBottom:8}}>{isG?"Hier anlegen":"Fenster anlegen"}</div>
           {isG&&<div style={{display:"flex",gap:6,marginBottom:10}}>{[["raum","Raum"],["fenster","Fenster"]].map(([k,l])=><button key={k} style={{...$.btn,...$.bS,flex:1,...(n.kind===k?$.bP:$.bO)}} onClick={()=>upd({kind:k})}>{l}</button>)}</div>}
@@ -1619,9 +1663,8 @@ function App(){
               {rooms.map(r=><option key={r.id} value={r.id}>{(r.raumnummer||r.raumId||"Raum")+" · "+r.geschoss+(r.trakt?" · "+r.trakt:"")}</option>)}<option value="__neu">+ Neuer Raum…</option></select></div>
             {!n.rId&&<div style={{display:"flex",gap:8,marginBottom:8}}><div style={{flex:2}}><label style={$.lbl}>Neuer Raum</label><input style={$.inp} autoFocus value={n.nrRaum} onChange={e=>upd({nrRaum:e.target.value})} placeholder="z.B. Foyer Süd"/></div>
               <div style={{flex:1}}><label style={$.lbl}>Geschoss</label><select style={$.sel} value={n.geschoss} onChange={e=>upd({geschoss:e.target.value})}>{FLOORS.map(f=><option key={f}>{f}</option>)}</select></div></div>}
-            {p.modus!=="verglasung"&&<div style={{display:"flex",gap:8,marginBottom:8}}>
-              <div style={{flex:1}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={n.nr} onChange={e=>upd({nr:e.target.value})}/></div>
-              <div style={{flex:1.3}}><label style={$.lbl}>Verglasungen</label><div style={{display:"flex",gap:4}}>{[1,2,3,4].map(k=><button key={k} style={{...$.btn,...$.bS,flex:1,padding:"9px 0",...(n.nVg===k?$.bP:$.bO)}} onClick={()=>upd({nVg:k})}>{k}</button>)}</div></div></div>}
+            {p.modus!=="verglasung"&&<><div style={{marginBottom:8}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={n.nr} onChange={e=>upd({nr:e.target.value})}/></div>
+              <TeilungPick p={p} value={n.teilung} onChange={t=>upd({teilung:t})} refF={null}/></>}
             {!isG&&doc.fassade&&<div style={{fontSize:11,color:C.tx2,marginBottom:8}}>Fassade {doc.fassade} wird übernommen.</div>}
             <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:13,marginBottom:12,cursor:"pointer"}}><input type="checkbox" checked={n.serie} onChange={e=>upd({serie:e.target.checked})} style={{marginTop:3}}/><span>Serie: weitere {isG?"Tipps":"Rechtecke"} legen direkt das nächste Fenster an (Nr. +1, gleicher Raum)</span></label></>}
           <button style={{...$.btn,...$.bP,...$.bBl}} onClick={save}>Anlegen</button></div></div>;})()}
@@ -1885,7 +1928,7 @@ function App(){
     })}
     {/* Add button */}
     {isV?<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{addFen(rm.id);flash("Verglasung +");}}>+ Verglasung hinzufügen</button>
-    :<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{setFmF({nr:`F${(rm.fenster?.length||0)+1}`,va:1});setModal("addF");}}>+ Fenster hinzufügen</button>}
+    :<button style={{...$.btn,...$.bP,...$.bBl,marginTop:8}} onClick={()=>{const fl=(rm.fenster||[]).filter(x=>!x.isVg);openNewFen(rm.id,fl[fl.length-1]||null);}}>+ Fenster hinzufügen</button>}
   </div>
     {edR&&<div style={$.modal} onClick={()=>setEdR(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Raum bearbeiten</div>
       <TraktPick value={edR.trakt} list={traktList(p)} onChange={v=>setEdR({...edR,trakt:v})}/>
@@ -1893,14 +1936,9 @@ function App(){
       <div style={{marginBottom:8}}><label style={$.lbl}>Raum / Bezeichnung</label><input style={$.inp} value={edR.raumnummer} onChange={e=>setEdR({...edR,raumnummer:e.target.value})}/></div>
       <div style={{marginBottom:14}}><label style={$.lbl}>Raum-ID (optional)</label><input style={$.inp} value={edR.raumId} onChange={e=>setEdR({...edR,raumId:e.target.value})}/></div>
       <button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{if(!edR.raumnummer.trim()&&!edR.raumId.trim()){flash("Raum oder Raum-ID angeben");return;}setRoomProps(rm.id,{trakt:(edR.trakt||"").trim(),geschoss:edR.geschoss,raumnummer:edR.raumnummer.trim(),raumId:edR.raumId.trim()});setEdR(null);flash("Raum gespeichert");}}>Speichern</button></div></div>}
-    {modal==="addF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:14}}>Fenster hinzufügen</div>
-      <div style={{marginBottom:8}}><label style={$.lbl}>Fenster-Nr.</label><input style={$.inp} value={fmF.nr} onChange={e=>setFmF({...fmF,nr:e.target.value})} autoFocus/></div>
-      <div style={{marginBottom:6}}><label style={$.lbl}>Verglasungen (Start)</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,6].map(n=><button key={n} style={{...$.btn,flex:1,...((fmF.va||1)===n?$.bP:$.bO)}} onClick={()=>setFmF({...fmF,va:n})}>{n}</button>)}</div></div>
-      <div style={{fontSize:11,color:C.tx2,marginBottom:14}}>Verglasungszahl später pro Fenster mit +/− anpassbar oder „aus Geometrie übernehmen". Für mehrere gleiche Fenster: ein Fenster anlegen und mit „⧉ Duplizieren" kopieren.</div>
-      <button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{addFen(rm.id,fmF.nr,fmF.va||1);setModal(null);flash("Fenster +");}}>Hinzufügen</button></div></div>}
     {modal==="dupR"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Raum duplizieren</div><div style={{fontSize:12,color:C.tx2,marginBottom:12}}>Erzeugt Kopien dieses Raums mit Aufbau, Geometrie und Stammdaten – ohne Messungen und Fotos. Raumnummern danach anpassen.</div><div style={{marginBottom:14}}><label style={$.lbl}>Anzahl Kopien</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,10].map(n=><button key={n} style={{...$.btn,flex:1,...(dupQty===n?$.bP:$.bO)}} onClick={()=>setDupQty(n)}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{dupRoom(rm.id,dupQty);setModal(null);}}>Duplizieren</button></div></div>}
     {modal==="dupF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Fenster duplizieren</div><div style={{fontSize:12,color:C.tx2,marginBottom:12}}>Erzeugt Kopien dieses Fensters mit Daten, Geometrie und Verglasungs-Aufbau – ohne Messungen und Fotos. Zustand und Angaben danach pro Kopie anpassen.</div><div style={{marginBottom:14}}><label style={$.lbl}>Anzahl Kopien</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,10].map(n=><button key={n} style={{...$.btn,flex:1,...(dupQty===n?$.bP:$.bO)}} onClick={()=>setDupQty(n)}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{dupFen(rm.id,dupFenId,dupQty);setModal(null);}}>Duplizieren</button></div></div>}
-  {fenSheet()}{Toast}</div>;}
+  {newFenModal()}{fenSheet()}{Toast}</div>;}
 
   // FENSTER – ein Fenster allein (aus dem Plan, der Messung oder der kompakten Messliste); ‹ › blättert im Raum
   if(view==="fenster"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);
@@ -1916,7 +1954,7 @@ function App(){
       {fenCard(p,rm,f,"fenster")}
     </div>
     {modal==="dupF"&&<div style={$.modal} onClick={()=>setModal(null)}><div style={$.modalC} onClick={e=>e.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Fenster duplizieren</div><div style={{fontSize:12,color:C.tx2,marginBottom:12}}>Erzeugt Kopien dieses Fensters mit Daten, Geometrie und Verglasungs-Aufbau – ohne Messungen und Fotos. Zustand und Angaben danach pro Kopie anpassen.</div><div style={{marginBottom:14}}><label style={$.lbl}>Anzahl Kopien</label><div style={{display:"flex",gap:4}}>{[1,2,3,4,5,10].map(n=><button key={n} style={{...$.btn,flex:1,...(dupQty===n?$.bP:$.bO)}} onClick={()=>setDupQty(n)}>{n}</button>)}</div></div><button style={{...$.btn,...$.bP,...$.bBl}} onClick={()=>{dupFen(rm.id,dupFenId,dupQty);setModal(null);}}>Duplizieren</button></div></div>}
-  {fenSheet()}{Toast}</div>;}
+  {newFenModal()}{fenSheet()}{Toast}</div>;}
 
   // MEASURE
   if(view==="measure"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);const v=f?.verglasungen?.find(x=>x.id===vg?.id);
@@ -2011,12 +2049,13 @@ function App(){
       {idx<tot-1?<button style={{...$.btn,...$.bP,flex:1}} onClick={()=>navTo(idx+1)}>Nächste →</button>
       :<button style={{...$.btn,...$.bOk,flex:1}} onClick={navRoom}>✓ Raum fertig</button>}
     </div>
+    {!isV&&<button style={{...$.btn,...$.bO,...$.bBl,marginTop:8}} onClick={()=>guardNav(()=>openNewFen(rm.id,f))}>+ Fenster in {rm.raumnummer||rm.raumId}</button>}
     {/* Add extra verglasung */}
     {isV&&<button style={{...$.btn,...$.bO,...$.bBl,marginTop:8}} onClick={addAndGoExtra}>+ Weitere Verglasung</button>}
   </div>
   {/* Confirm dialog for unsaved data */}
   {confirmNav&&<ConfirmDialog message="Es gibt einen noch nicht gespeicherten Messwert im Ziffernblock. Ohne Speichern fortfahren?" onYes={()=>{setNumVal("");confirmNav.action();setConfirmNav(null);}} onNo={()=>setConfirmNav(null)}/>}
-  {fenSheet()}{Toast}</div>;}
+  {newFenModal()}{fenSheet()}{Toast}</div>;}
 
   return null;
 }
