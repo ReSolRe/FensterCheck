@@ -583,9 +583,12 @@ function makeFenster({nr,nVg,data,isVg}){const f={id:uid(),nr:nr||"F1",verglasun
 // ── Neues Fenster mit Aufteilung: t = {k:"n",n} ohne Skizze | {k:"raster",c,r,zeilen} | {k:"tpl",id} | {k:"wie",fId} ──
 function teilungGeo(t,p){if(!t||t.k==="n")return null;if(t.k==="raster")return geoRaster(t.c,t.r,{zeilen:t.zeilen});
   if(t.k==="tpl"){const x=GEO_TEMPLATES.find(z=>z.id===t.id);return x?normalizeGeo(x.make()):null;}
-  if(t.k==="wie"){const h=findFen(p,t.fId);return h&&fenSkizze(h.f)?geoStructOf(h.f.geometrie):null;}return null;}
+  if(t.k==="wie"){const h=findFen(p,t.fId);return h&&fenSkizze(h.f)?geoStructOf(h.f.geometrie):null;}
+  if(t.k==="typ"){const ty=((p&&p.typen)||[]).find(x=>x.id===t.typId);return ty?geoStripVg(ty.geometrie):null;}return null;}
 function teilungN(t,p){const g=teilungGeo(t,p);return g?geoCellCount(g):Math.min(30,Math.max(1,(t&&t.n)|0||1));}
-function makeFensterT({nr,data,teilung,p,isVg}){if(isVg)return makeFenster({nr,nVg:1,data,isVg:true});const g=teilungGeo(teilung,p),f=makeFenster({nr,nVg:g?1:teilungN(teilung,p),data});
+function makeFensterT({nr,data,teilung,p,isVg}){if(isVg)return makeFenster({nr,nVg:1,data,isVg:true});
+  const ty=teilung&&teilung.k==="typ"&&((p&&p.typen)||[]).find(x=>x.id===teilung.typId);if(ty){const f=makeFenster({nr,nVg:1,data});typAssign(f,ty,{geo:"typ"});return f;}   // Typ: Skizze + Angaben
+  const g=teilungGeo(teilung,p),f=makeFenster({nr,nVg:g?1:teilungN(teilung,p),data});
   if(g){const res=geoSyncVg(g,f.verglasungen);f.geometrie=res.geo;f.verglasungen=res.verglasungen;}return f;}
 // Nummern-Vorschläge für ein neues Fenster: Schema; sonst nach dem Vorbild und je Nummernstamm im Raum die nächste freie (max. 4)
 function fenNrChips(p,rId,refNr){const r=((p&&p.rooms)||[]).find(x=>x.id===rId),out=[],add=x=>{if(x&&!out.includes(x))out.push(x);};
@@ -1194,7 +1197,9 @@ function GeoSvg({geo,aspect,sel,onSel,verglasungen,highlightVg,mini}){
 // Auswahl der Aufteilung beim Anlegen: wie Vorbild | 1–4 Verglasungen ohne Skizze | Raster | Vorlage
 function TeilungPick({p,value,onChange,refF,aspect}){const t=value||{k:"n",n:1},gb={...$.btn,...$.bS,minHeight:36,padding:"6px 10px",fontSize:12};
   const g=teilungGeo(t,p),n=teilungN(t,p),refOk=refF&&fenSkizze(refF),rc=t.k==="raster"?t:{c:2,r:1,zeilen:false};
+  const ts=(p&&p.typen)||[],ty=t.k==="typ"&&ts.find(x=>x.id===t.typId);
   return <div style={{marginBottom:10}}><label style={$.lbl}>Aufteilung</label>
+    {ts.length>0&&<select style={{...$.sel,...$.selS,marginBottom:6,...(t.k==="typ"?{borderColor:C.ac,color:C.ac}:{})}} value={t.k==="typ"?t.typId:""} onChange={e=>onChange(e.target.value?{k:"typ",typId:e.target.value}:{k:"n",n:1})}><option value="">Fenstertyp … (Skizze + Angaben vom Typ)</option>{ts.map(x=><option key={x.id} value={x.id}>{x.kurz}{x.name?" · "+x.name:""} · {geoCellCount(x.geometrie)} Feld{geoCellCount(x.geometrie)===1?"":"er"}</option>)}</select>}
     <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
       {refOk&&<button style={{...gb,...(t.k==="wie"?$.bP:$.bO)}} onClick={()=>onChange({k:"wie",fId:refF.id})}>wie {refF.nr}</button>}
       {[1,2,3,4].map(k=><button key={k} style={{...gb,...(t.k==="n"&&(t.n||1)===k?$.bP:$.bO)}} onClick={()=>onChange({k:"n",n:k})}>{k} Vgl.</button>)}
@@ -1203,7 +1208,7 @@ function TeilungPick({p,value,onChange,refF,aspect}){const t=value||{k:"n",n:1},
     {t.k==="raster"&&<div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:6}}>
       {[["c","Spalte","Spalten"],["r","Zeile","Zeilen"]].map(([k,l1,l2])=><span key={k} style={{display:"inline-flex",alignItems:"center",gap:3}}><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>onChange({...t,[k]:Math.max(1,t[k]-1)})}>−</button><span style={{fontSize:12,minWidth:56,textAlign:"center"}}>{t[k]} {t[k]===1?l1:l2}</span><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>onChange({...t,[k]:Math.min(8,t[k]+1)})}>+</button></span>)}
       {t.c>1&&t.r>1&&<button style={{...gb,...$.bO}} onClick={()=>onChange({...t,zeilen:!t.zeilen})}>{t.zeilen?"Zeilen durchgehend":"Spalten durchgehend"} ⇄</button>}</div>}
-    <div style={{display:"flex",alignItems:"center",gap:8}}>{g&&<div style={{width:56}}><GeoSvg mini geo={g} aspect={aspect||GEO_ASPECT_DEF}/></div>}<span style={{fontSize:11,color:C.tx2}}>{g?`${n} Felder = ${n} Verglasungen (Öffnungsarten danach in der Skizze)`:`${n} Verglasung${n===1?"":"en"}, ohne Skizze`}</span></div>
+    <div style={{display:"flex",alignItems:"center",gap:8}}>{g&&<div style={{width:56}}><GeoSvg mini geo={g} aspect={aspect||GEO_ASPECT_DEF}/></div>}<span style={{fontSize:11,color:C.tx2}}>{ty?`Typ ${ty.kurz}: ${n} Feld${n===1?"":"er"} = ${n} Verglasung${n===1?"":"en"}, Angaben vom Typ`:g?`${n} Felder = ${n} Verglasungen (Öffnungsarten danach in der Skizze)`:`${n} Verglasung${n===1?"":"en"}, ohne Skizze`}</span></div>
   </div>;}
 function GeoEditor({geo,onChange,verglasungen,onJump,onSync,onClear,getVorbilder,aspect,noVg}){
   const g=normalizeGeo(geo),vgs=verglasungen||[],fx={geometrie:geo,verglasungen:vgs},sk=fenSkizze(fx),vok=geoVgOk(fx);
@@ -1611,7 +1616,7 @@ function App(){
   // HOME
   // Dialog «Neues Fenster» (Raum, Fensteransicht, Messung): Nummer nach Vorbild/Schema, Aufteilung gleich beim Anlegen, danach öffnen
   const openNewFen=(rId,refF)=>{const p=projRef.current;setNewF({rId,refId:refF?refF.id:"",nr:fenNrChips(p,rId,refF&&refF.nr)[0]||suggestFenNr(p,rId),
-    teilung:refF&&fenSkizze(refF)?{k:"wie",fId:refF.id}:{k:"n",n:Math.max(1,((refF&&refF.verglasungen)||[]).length||1)}});};
+    teilung:refF&&typOf(p,refF)?{k:"typ",typId:refF.typ}:refF&&fenSkizze(refF)?{k:"wie",fId:refF.id}:{k:"n",n:Math.max(1,((refF&&refF.verglasungen)||[]).length||1)}});};
   const createNewFen=()=>{const n=newF,p=projRef.current,r=gR(p,n.rId);if(!r)return;const nr=(n.nr||"").trim()||suggestFenNr(p,n.rId),ref=n.refId&&gF(r,n.refId);
     if(fenNrDup(p,nr,null,n.rId).length&&!confirm(`Fenster ${nr} gibt es schon. Trotzdem anlegen?`))return;
     let nf=null;mut(q=>{const rr=gR(q,n.rId);if(!rr)return;nf=makeFensterT({nr,teilung:n.teilung,p:q,data:ref&&ref.data&&ref.data.fassade?{fassade:ref.data.fassade}:{}});(rr.fenster=rr.fenster||[]).push(nf);});
