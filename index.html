@@ -70,7 +70,7 @@ const DSRC_L={M:"Messwert",H:"Herstellerang.",P:"Planungsdaten"};
 const FEN_AB={"Dreh":"D","Kipp":"K","Dreh-Kipp":"DK","Fest":"F","Schiebe":"S","Klapp":"Kl","Sonstig":"?"};
 const RM_POS=[["oben","Oben"],["unten","Unten"],["links","Links"],["rechts","Rechts"],["mittelV","Mittelsteg vertikal"],["mittelH","Mittelsteg horizontal"]];
 const ROW_ROLES=["Hauptfenster","Oberlicht","Brüstung","Seitenteil","Zwischenfeld"];
-const APP_VERSION="v20 · September 2026";
+const APP_VERSION="v21 · Oktober 2026";
 const APP_REPO="https://github.com/ReSolRe/FensterCheck";
 
 // Editierbare thermische Standardwerte (global + Projekt-Override)
@@ -1144,7 +1144,7 @@ function App(){
   // Track unsaved state
   useEffect(()=>{setHasUnsaved(numVal.length>0);},[numVal]);
   useEffect(()=>{setAufIn(null);setSzrSel(1);},[vg?.id]);   // neue Verglasung: Aufbau-Vorschlag und SZR 1
-  useEffect(()=>{if(!["plan","room","measure"].includes(view))setFromPlan(false);},[view]);
+  useEffect(()=>{if(!["plan","room","measure","fenster"].includes(view))setFromPlan(false);},[view]);
 
   const guardNav=(action)=>{
     if(hasUnsaved){setConfirmNav({action});}
@@ -1681,20 +1681,23 @@ function App(){
   // ROOM
   // Fensterkarte (Raumansicht und Fensteransicht): Fotos, Abschnitte, Verglasungen, Kennwerte, Bemerkungen.
   // from = "room" | "fenster": aus der Fensteransicht geöffnete Messungen führen mit «← Fenster» zurück
+  // Status einer Verglasung: Messprofil n. m. / ✓ / offen, sonst ✓ wenn erfasst
+  const vgBadge=(p,f,v)=>{const ok=<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>;if(!profMess(p))return vgErf(f,v)?ok:null;const sk=profMs(p).map(t=>msSkipOf(v,t)).find(Boolean);
+    return sk?<span style={{...$.badge,background:C.warnBg,color:C.warn}} title={sk.grund}>n. m.</span>:vgGemessen(p,v)?ok:<span style={{...$.badge,background:C.sf2,color:C.tx3}}>offen</span>;};
   const fenCard=(p,rm,f,from)=>{
-    const openVg=v=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setMsFrom(from==="fenster"?"fenster":"");setView("measure");};
+    const openVg=v=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setMsFrom(from==="fenster"&&fenFrom!=="measure"?"fenster":"");setView("measure");};
     const fld=(f,[k,d])=>{  // Feld eines Abschnitts rendern (Sonderfelder: Zustand Rahmen, Geometrie, Rahmenmaße)
       if(d.t==="zustand")return <ZustInp key={k} modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>;
       if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={ng=>setGeo(rm.id,f.id,ng)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv)openVg(vv);}} onSyncVg={()=>syncVgFromGeo(rm.id,f.id)}/></div>;
       if(d.t==="masse")return <div key={k} style={{marginBottom:8}}><label style={$.lbl}>{d.label}</label><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>;
       return <FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;};
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
-    return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster umbenennen" onClick={()=>{const n=prompt("Fenster-Nr. / Bezeichnung",f.nr);if(n!=null)renFen(rm.id,f.id,n);}}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{f.verglasungen?.every(v=>vgErf(f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}{hasPlanFor("fen",rm,f)&&<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>planFor("fen",rm,f)} title="Im Plan zeigen / verorten">🗺</button>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px",color:C.err}} title="Fenster löschen" onClick={()=>{const i=inhalt(f);if(confirm(`Fenster ${f.nr} löschen?`+(i?` Es enthält ${i}.`:"")+" Das lässt sich nicht rückgängig machen."))delFen(rm.id,f.id);}}>🗑</button></div></div>
+    return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster umbenennen" onClick={()=>{const n=prompt("Fenster-Nr. / Bezeichnung",f.nr);if(n!=null)renFen(rm.id,f.id,n);}}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{(f.verglasungen||[]).length>0&&f.verglasungen.every(v=>vgDone(p,f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}{hasPlanFor("fen",rm,f)&&<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>planFor("fen",rm,f)} title="Im Plan zeigen / verorten">🗺</button>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px",color:C.err}} title="Fenster löschen" onClick={()=>{const i=inhalt(f);if(confirm(`Fenster ${f.nr} löschen?`+(i?` Es enthält ${i}.`:"")+" Das lässt sich nicht rückgängig machen."))delFen(rm.id,f.id);}}>🗑</button></div></div>
         <div style={{marginBottom:8}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
         {secBlock(f,"lage")}{secBlock(f,"rahmen")}{secBlock(f,"funktion")}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>openVg(v)}>
-            <span style={{fontWeight:700,fontSize:13}}>Verglasung {v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:12}}>{fmtMs(lm)}</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}
+            <span style={{fontWeight:700,fontSize:13}}>Verglasung {v.nr}</span>{lm&&<span style={{fontFamily:"monospace",color:C.ac,fontWeight:700,fontSize:12}}>{fmtMs(lm)}</span>}{(v.messungen?.length||0)>1&&<span style={{...$.badge,background:C.sf,color:C.tx2,fontSize:10}}>{v.messungen.length}×</span>}<span style={{marginLeft:"auto"}}>{vgBadge(p,f,v)}</span>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:4}}>
             <button style={{background:"none",border:"none",color:C.err,cursor:"pointer",fontSize:15,padding:"2px 6px"}} title="Verglasung löschen" onClick={()=>{const last=(f.verglasungen||[]).length<=1,i=inhalt(v);if(confirm(last?`Letzte Verglasung – Fenster ${f.nr} komplett löschen?`:`Verglasung ${v.nr} von ${f.nr} löschen?`+(i?` Sie enthält ${i}.`:"")))delVg(rm.id,f.id,v.id);}}>🗑</button>
@@ -1712,14 +1715,13 @@ function App(){
     const openMs=(f,v)=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setMsFrom("");setView("measure");};
     const openFen=f=>{setRoom(rm);setFen(f);setFenFrom("room");setView("fenster");};
     const msSum=v=>msKeys.map(t=>{const st=msStats(msOf(v,t));return st?`${MS_TYPES[t].short} ${st.n>1?"Ø ":""}${st.avg} ${MS_TYPES[t].unit}${st.n>1?" ×"+st.n:""}`:null;}).filter(Boolean).join(" · ");
-    const stBadge=v=>{const sk=msKeys.map(t=>msSkipOf(v,t)).find(Boolean);return sk?<span style={{...$.badge,background:C.warnBg,color:C.warn}} title={sk.grund}>n. m.</span>:vgGemessen(p,v)?<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>:<span style={{...$.badge,background:C.sf2,color:C.tx3}}>offen</span>;};
     const raumFotos=<div style={$.card}><Photos label="Raum-Fotos" photos={rm.photos||[]} onAdd={ph=>addPh(rm.id,null,null,ph)} onDel={pid=>delPh(rm.id,null,null,pid)}/></div>;
     const compactList=<>{<div style={{...$.card,padding:"4px 10px"}}>{(rm.fenster||[]).flatMap(f=>(f.verglasungen||[]).map(v=>{const multi=(f.verglasungen||[]).length>1;
       return <div key={v.id} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 2px",borderBottom:`1px solid ${C.bd}`,cursor:"pointer"}} onClick={()=>openMs(f,v)}>
         {isV?<span style={{fontWeight:800,fontSize:14,whiteSpace:"nowrap"}}>{f.nr}</span>
           :<span style={{fontWeight:800,fontSize:14,whiteSpace:"nowrap"}}><span title="Fenster anzeigen" onClick={e=>{e.stopPropagation();openFen(f);}} style={{textDecoration:"underline dotted",textUnderlineOffset:3,cursor:"pointer"}}>{f.nr}</span>{multi?` · V${v.nr}`:""}</span>}
         <span style={{flex:1,minWidth:0,fontFamily:"monospace",fontSize:13,color:C.ac,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{msSum(v)}</span>
-        {stBadge(v)}<span style={{color:C.tx3}}>›</span></div>;}))}</div>}{raumFotos}</>;
+        {vgBadge(p,f,v)}<span style={{color:C.tx3}}>›</span></div>;}))}</div>}{raumFotos}</>;
   return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(fromPlan?"plan":"survey")}>{fromPlan?"← Plan":"← Räume"}</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div><button style={$.hdrB} onClick={()=>setEdR({trakt:rm.trakt||"",geschoss:rm.geschoss||"EG",raumnummer:rm.raumnummer||"",raumId:rm.raumId||""})} title="Raum bearbeiten">✎</button>{hasPlanFor("room",rm)&&<button style={$.hdrB} title="Im Plan zeigen / verorten" onClick={()=>planFor("room",rm)}>🗺</button>}<button style={$.hdrB} onClick={()=>{setDupQty(1);setModal("dupR");}} title="Raum duplizieren">⧉</button><button style={{...$.hdrB,color:C.err}} onClick={()=>{if(confirm("Raum löschen?"))delRoom(rm.id);}}>🗑</button></div><div className="body" style={$.body}>
     <div style={{display:"flex",gap:6,marginBottom:10}}><div style={$.stat}><div style={$.statV}>{rs.g}</div><div style={$.statL}>Vergl.</div></div><div style={$.stat}><div style={{...$.statV,color:C.ac}}>{rs.m}</div><div style={$.statL}>Mess.</div></div>{!isV&&<div style={$.stat}><div style={$.statV}>{rs.f}</div><div style={$.statL}>Fenster</div></div>}</div>
     {mess&&<div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:C.tx2,marginBottom:3}}><span>{profOf(p).name}: {rs.e}/{rs.g} gemessen</span><button style={{...$.btn,...$.bO,...$.bS,padding:"3px 9px",fontSize:11}} onClick={()=>setShowAll(x=>!x)}>{showAll?"Kompakte Liste":"Alle Angaben"}</button></div><div style={$.prog}><div style={$.progF(rs.g?rs.e/rs.g*100:0)}/></div></div>}
@@ -1776,8 +1778,9 @@ function App(){
   // FENSTER – ein Fenster allein (aus dem Plan, der Messung oder der kompakten Messliste); ‹ › blättert im Raum
   if(view==="fenster"){const p=proj;const rm=p.rooms.find(r=>r.id===room?.id);const f=rm?.fenster?.find(x=>x.id===fen?.id);
     if(!rm||!f){setView(rm?"room":"survey");return null;}
-    const nv=fenNav(rm,f.id),toPlan=fenFrom==="plan";const nb={...$.btn,...$.bO,...$.bS,padding:"6px 14px"};
-    return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView(toPlan?"plan":"room")}>{toPlan?"← Plan":"← Raum"}</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div></div><div style={{...$.body,maxWidth:720,width:"100%",margin:"0 auto"}}>
+    const nv=fenNav(rm,f.id),toMs=fenFrom==="measure"&&vg?rm.fenster.find(x=>(x.verglasungen||[]).some(y=>y.id===vg.id)):null,toPlan=fenFrom==="plan"||(fenFrom==="measure"&&fromPlan);const nb={...$.btn,...$.bO,...$.bS,padding:"6px 14px"};
+    const fenBack=()=>{if(toMs){setFen(toMs);setMsFrom("");setView("measure");}else setView(toPlan?"plan":"room");};
+    return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={fenBack}>{toMs?"← Messung":toPlan?"← Plan":"← Raum"}</button><div style={$.hdrT}>{rm.raumnummer||rm.raumId} · {rm.geschoss}{rm.trakt?<span style={{color:C.tx2,fontWeight:500}}> · {rm.trakt}</span>:null}</div></div><div style={{...$.body,maxWidth:720,width:"100%",margin:"0 auto"}}>
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
         <button style={{...nb,opacity:nv.prev?1:0.35}} disabled={!nv.prev} title="Vorheriges Fenster" onClick={()=>nv.prev&&setFen(nv.prev)}>‹</button>
         <div style={{flex:1,textAlign:"center",fontSize:12,color:C.tx2}}>Fenster {nv.i+1}/{nv.n}</div>
@@ -1798,7 +1801,7 @@ function App(){
     const go=i=>{setFen(all[i].f);setVg(all[i].v);setNumVal("");};
     const navTo=(i)=>guardNav(()=>go(i));
     const navBack=()=>guardNav(()=>setView(msFrom==="fenster"?"fenster":fromPlan?"plan":"room"));
-    const navFen=()=>guardNav(()=>{setNumVal("");setFenFrom(fromPlan?"plan":"room");setMsFrom("");setView("fenster");});
+    const navFen=()=>guardNav(()=>{setNumVal("");if(msFrom!=="fenster")setFenFrom("measure");setView("fenster");});
     const navRoom=()=>guardNav(()=>{setNumVal("");setView("room");});
     // Diese Verglasung löschen (letzte Verglasung = ganzes Fenster), danach zur Verglasung an derselben Stelle bzw. zurück in den Raum
     const delHere=()=>{const last=isV||(f.verglasungen||[]).length<=1,i=inhalt(v);
