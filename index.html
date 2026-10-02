@@ -1043,10 +1043,11 @@ function GeoSvg({geo,aspect,sel,onSel,verglasungen,highlightVg,mini}){
   return <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{height:"auto",maxHeight:mini?140:380,display:"block",margin:"0 auto",touchAction:"manipulation"}}>{rects}{seps}{syms}{grp}<rect x={3} y={3} width={VW-6} height={VH-6} fill="none" stroke={C.tx2} strokeWidth={mini?1.5:4} rx={4} style={{pointerEvents:"none",...ns}}/></svg>;
 }
 // Fenstergeometrie – Teilungsbaum: Vorlage wählen oder Felder antippen (Öffnungsart, Bandseite, Rolle, Verglasung) und senkrecht/waagrecht teilen
-function GeoEditor({geo,onChange,verglasungen,onJump,onSync,aspect}){
+function GeoEditor({geo,onChange,verglasungen,onJump,onSync,onClear,getVorbilder,aspect}){
   const g=normalizeGeo(geo),vgs=verglasungen||[],fx={geometrie:geo,verglasungen:vgs},sk=fenSkizze(fx),vok=geoVgOk(fx);
   const[sel,setSel]=useState(null);
   const[showTpl,setShowTpl]=useState(geoIsLeaf(g.tree)&&!g.tree.art&&!g.tree.role&&!g.tree.vg);
+  const[rc,setRc]=useState(sk?2:Math.min(8,Math.max(1,vgs.length)));const[rr,setRr]=useState(1);const[rz,setRz]=useState(false);   // Raster: Spalten, Zeilen, Zeilen durchgehend
   const cur=sel!=null&&geoNode(g,sel)?sel:null,node=cur!=null?geoNode(g,cur):null;   // ungültige Auswahl (Fremdänderung) wirkt wie „nichts gewählt"
   const leaves=geoLeaves(g),a=aspect||GEO_ASPECT_DEF,VW=a>=1?300:Math.round(300*a),VH=a>=1?Math.round(300/a):300;
   const box=cur!=null?geoLayout(g.tree,8,8,VW-16,VH-16).find(b=>b.path===cur):null,depth=cur?cur.split(".").length:0;
@@ -1054,10 +1055,22 @@ function GeoEditor({geo,onChange,verglasungen,onJump,onSync,aspect}){
   const upd=(ng,nextSel,op)=>{if(onChange(ng,op)===false)return;if(nextSel!==undefined)setSel(nextSel);};   // op: Art der Änderung (Verglasungen folgen der Skizze); false = abgebrochen
   const gb={...$.btn,...$.bS,minHeight:36,padding:"6px 10px",fontSize:12};
   const parentPath=cur?geoParentPath(cur):null,parent=cur?geoNode(g,parentPath):null,pidx=cur?geoIdx(cur):0,leafIdx=cur!=null?leaves.findIndex(l=>l.path===cur):-1;
+  // Vorlage/Raster/«wie Fenster» anwenden: Verglasungen werden den neuen Feldern der Reihe nach zugeordnet
+  const applyTpl=ng=>{if((geoCellCount(g)>1||geoLeaves(g).some(l=>l.node.art))&&!confirm("Bisherige Aufteilung ersetzen? Die Verglasungen werden den neuen Feldern der Reihe nach zugeordnet."))return;upd(ng,null,{t:"tpl"});setShowTpl(false);};
   const stegBtns=(path,val)=>[["pfosten","Pfosten"],["stulp","Stulp"]].map(([k,l])=><button key={k} style={{...gb,...(val===k?$.bP:$.bO)}} onClick={()=>upd(geoSetNode(g,path,{steg:k}))}>{l}</button>);
   return <div>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>Fensteraufbau</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setShowTpl(x=>!x)}>Vorlagen {showTpl?"▴":"▾"}</button></div>
-    {showTpl&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(76px,1fr))",gap:6,marginBottom:8}}>{GEO_TEMPLATES.map(t=><div key={t.id} onClick={()=>{if((geoCellCount(g)>1||geoLeaves(g).some(l=>l.node.art))&&!confirm("Bisherige Aufteilung durch die Vorlage ersetzen? Die Verglasungen werden den neuen Feldern der Reihe nach zugeordnet."))return;upd(t.make(),null,{t:"tpl"});setShowTpl(false);}} style={{border:`1px solid ${C.bd}`,borderRadius:8,padding:4,cursor:"pointer",background:C.sf2,textAlign:"center"}}><GeoSvg mini geo={t.make()} aspect={t.aspect||GEO_ASPECT_DEF}/><div style={{fontSize:9,color:C.tx2,marginTop:2,lineHeight:1.2}}>{t.name}</div></div>)}</div>}
+    {showTpl&&<div style={{padding:8,background:C.sf2,borderRadius:8,marginBottom:8}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:C.tx2,minWidth:40}}>Raster</span>
+        {[["Spalte","Spalten",rc,setRc],["Zeile","Zeilen",rr,setRr]].map(([l1,l2,v,set])=><span key={l2} style={{display:"inline-flex",alignItems:"center",gap:3}}><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>set(Math.max(1,v-1))}>−</button><span style={{fontSize:12,minWidth:56,textAlign:"center"}}>{v} {v===1?l1:l2}</span><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>set(Math.min(8,v+1))}>+</button></span>)}</div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,flexWrap:"wrap"}}><div style={{width:60}}><GeoSvg mini geo={geoRaster(rc,rr,{zeilen:rz})} aspect={a}/></div>
+        {rc>1&&rr>1&&<button style={{...gb,...$.bO}} title="Welche Teilung geht durch? Bestimmt auch die Reihenfolge V1, V2 …" onClick={()=>setRz(x=>!x)}>{rz?"Zeilen durchgehend":"Spalten durchgehend"} ⇄</button>}
+        <button style={{...gb,...$.bP,marginLeft:"auto"}} onClick={()=>applyTpl(geoRaster(rc,rr,{zeilen:rz}))}>Anwenden · {rc*rr} Feld{rc*rr===1?"":"er"}</button></div>
+      {getVorbilder&&(()=>{const vb=getVorbilder(),opt=v=><option key={v.fId} value={v.fId}>{v.label} · {v.n} Feld{v.n===1?"":"er"}</option>;return vb.length?<div style={{display:"flex",alignItems:"center",gap:6,marginTop:8}}><span style={{fontSize:11,color:C.tx2,minWidth:40}}>wie</span>
+        <select style={{...$.sel,...$.selS,flex:1}} value="" onChange={e=>{const x=vb.find(v=>v.fId===e.target.value);if(x)applyTpl(x.geo);}}><option value="">Fenster wählen – Aufteilung übernehmen</option>{vb.some(v=>v.eigen)&&<optgroup label="in diesem Raum">{vb.filter(v=>v.eigen).map(opt)}</optgroup>}{vb.some(v=>!v.eigen)&&<optgroup label="andere Räume">{vb.filter(v=>!v.eigen).map(opt)}</optgroup>}</select></div>:null;})()}
+      {onClear&&geo&&<button style={{...gb,...$.bO,marginTop:8,color:C.err,borderColor:C.err+"60"}} onClick={onClear}>Skizze entfernen (Verglasungen bleiben)</button>}
+    </div>}
+    {showTpl&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(76px,1fr))",gap:6,marginBottom:8}}>{GEO_TEMPLATES.map(t=><div key={t.id} onClick={()=>applyTpl(t.make())} style={{border:`1px solid ${C.bd}`,borderRadius:8,padding:4,cursor:"pointer",background:C.sf2,textAlign:"center"}}><GeoSvg mini geo={t.make()} aspect={t.aspect||GEO_ASPECT_DEF}/><div style={{fontSize:9,color:C.tx2,marginTop:2,lineHeight:1.2}}>{t.name}</div></div>)}</div>}
     <div style={{display:"flex",gap:6,marginBottom:6}}>
       <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,true,"Oberlicht");upd(ng,"0",{t:"add"});}}>+ Oberlicht</button>
       <button style={{...gb,...$.bO,flex:1}} onClick={()=>{const ng=geoAddBand(g,false,"Brüstung");upd(ng,String(ng.tree.kids.length-1),{t:"add"});}}>+ Brüstung</button>
@@ -1075,7 +1088,7 @@ function GeoEditor({geo,onChange,verglasungen,onJump,onSync,aspect}){
           return <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:6}}><span style={{fontSize:11,color:C.tx2}}>Verglasung <b style={{color:C.tx}}>V{mine?mine.nr:"?"}</b>{mine&&nm(mine)?` (${nm(mine)} Messwert${nm(mine)===1?"":"e"})`:""}{others.length?" · Inhalt tauschen mit:":""}</span>
             {others.map(v=><button key={v.id} title={`Inhalte (Messwerte, Fotos, Angaben) von V${mine?mine.nr:"?"} und V${v.nr} tauschen`} style={{...gb,...$.bO}} onClick={()=>upd(geoSwapVg(g,cur,v.id),undefined,{t:"pick",msg:`Inhalte V${mine?mine.nr:"?"} ⇄ V${v.nr} getauscht`})}>V{v.nr}{nm(v)?` · ${nm(v)}×`:""}</button>)}
             {node.vg&&onJump&&<button style={{...gb,...$.bP}} onClick={()=>onJump(node.vg)}>→ öffnen</button>}</div>;})()
-        :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>{vgs.length} Verglasung{vgs.length===1?"":"en"} ohne Skizze – Vorlage wählen, dann werden sie den Feldern der Reihe nach zugeordnet</div>}
+        :<div style={{fontSize:10,color:C.tx3,marginBottom:6}}>{vgs.length} Verglasung{vgs.length===1?"":"en"} ohne Skizze – Vorlage oder Raster wählen, dann werden sie den Feldern der Reihe nach zugeordnet</div>}
         <div style={{display:"flex",gap:4,marginBottom:6}}>
           <button style={{...gb,...$.bO,flex:1,opacity:canSplit("v")?1:0.4}} disabled={!canSplit("v")} onClick={()=>upd(geoSplit(g,cur,"v"),geoPath(cur,0),{t:"split",path:cur})}>⫿ senkrecht teilen</button>
           <button style={{...gb,...$.bO,flex:1,opacity:canSplit("h")?1:0.4}} disabled={!canSplit("h")} onClick={()=>upd(geoSplit(g,cur,"h"),geoPath(cur,0),{t:"split",path:cur})}>⫗ waagrecht teilen</button>
@@ -1748,7 +1761,7 @@ function App(){
     const openVg=v=>{setRoom(rm);setFen(f);setVg(v);setNumVal("");setMsFrom(from==="fenster"&&fenFrom!=="measure"?"fenster":"");setView("measure");};
     const fld=(f,[k,d])=>{  // Feld eines Abschnitts rendern (Sonderfelder: Zustand Rahmen, Geometrie, Rahmenmaße)
       if(d.t==="zustand")return <ZustInp key={k} modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>;
-      if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={(ng,op)=>geoEdit(rm.id,f.id,ng,op)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv)openVg(vv);}} onSync={()=>geoEdit(rm.id,f.id,f.geometrie,{t:"sync"})}/></div>;
+      if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={(ng,op)=>geoEdit(rm.id,f.id,ng,op)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv)openVg(vv);}} onSync={()=>geoEdit(rm.id,f.id,f.geometrie,{t:"sync"})} getVorbilder={()=>geoVorbilder(p,f.id)} onClear={()=>{if(confirm(`Skizze von ${f.nr} entfernen? Die ${(f.verglasungen||[]).length} Verglasung(en) bleiben erhalten; ihre Zahl wird dann wieder über «+ Verglasung» geführt.`))setGeo(rm.id,f.id,null);}}/></div>;
       if(d.t==="masse")return <div key={k} style={{marginBottom:8}}><label style={$.lbl}>{d.label}</label><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>;
       return <FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;};
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
