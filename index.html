@@ -128,7 +128,9 @@ function geoFixNode(n){
     const out={dir,w,kids,role};if(dir==="v")out.steg=n.steg==="stulp"?"stulp":"pfosten";
     return out;}
   const art=FEN_TYPEN.includes(n.art)?n.art:"";
-  return {art,band:(GEO_BANDS[art]||[]).includes(n.band)?n.band:"",vg:typeof n.vg==="string"?n.vg:"",role:ROW_ROLES.includes(n.role)?n.role:""};
+  const out={art,band:(GEO_BANDS[art]||[]).includes(n.band)?n.band:"",vg:typeof n.vg==="string"?n.vg:"",role:ROW_ROLES.includes(n.role)?n.role:""};
+  if(typeof n.k==="string"&&n.k)out.k=n.k;   // Feldschlüssel (Fenstertyp): verbindet gleiche Felder aller Fenster eines Typs
+  return out;
 }
 function geoFromRows(rows,cells){  // Zeilen-Modell → Baum (verlustfrei; Leserichtung oben→unten, links→rechts bleibt)
   const c=k=>(cells&&cells[k])||{};
@@ -170,7 +172,7 @@ function geoSetLeaf(g,path,patch){g=geoClone(normalizeGeo(g));const n=geoNode(g,
 function geoSetNode(g,path,patch){g=geoClone(normalizeGeo(g));const n=geoNode(g,path);if(!n)return g;Object.assign(n,patch);return normalizeGeo(g);}
 // Feld teilen (1:1): Rolle wandert auf die Teilung; erstes Kind erbt Art/Band/Verglasung, zweites nur die Art (Band bei senkrechter Teilung gespiegelt)
 function geoSplit(g,path,dir){g=geoClone(normalizeGeo(g));const n=geoNode(g,path);if(!n||!geoIsLeaf(n)||(path&&path.split(".").length>=GEO_MAX_DEPTH))return g;
-  const mirror=b=>b==="L"?"R":b==="R"?"L":b;const a={...n,role:""},b={...n,role:"",vg:"",band:dir==="v"?mirror(n.band):n.band};
+  const mirror=b=>b==="L"?"R":b==="R"?"L":b;const a={...n,role:""},b={...n,role:"",vg:"",band:dir==="v"?mirror(n.band):n.band};delete b.k;
   const sp={dir:dir==="v"?"v":"h",w:[1,1],kids:[a,b],role:n.role};if(sp.dir==="v")sp.steg="pfosten";
   if(path==="")g.tree=sp;else{const pa=geoNode(g,geoParentPath(path));pa.kids[geoIdx(path)]=sp;}return normalizeGeo(g);}
 function geoRemove(g,path){g=geoClone(normalizeGeo(g));if(!path)return g;const pa=geoNode(g,geoParentPath(path));if(!pa||!pa.kids)return g;const i=geoIdx(path);pa.kids.splice(i,1);pa.w.splice(i,1);return normalizeGeo(g);}
@@ -205,6 +207,24 @@ const GEO_TEMPLATES=[
   {id:"dk2ob",name:"2-flg + Oberl. + Brüst.",make:()=>({tree:_H([_Lf("Kipp","U","Oberlicht"),_V([_Lf("Dreh","L"),_Lf("Dreh-Kipp","R")],[1,1],"stulp"),_Lf("Fest","","Brüstung")],[1,3,1])})},
   {id:"leer",name:"Leer (1 Feld)",make:()=>newGeo()},
 ];
+// ── Fenstertypen (p.typen): Aufteilung (Felder mit Schlüssel k), Konstruktionsangaben, Rahmenmaße, Referenzfoto, Unterlagen.
+// Die Werte werden in die Fenster kopiert (f.typ = Typ-ID); Abweichungen ergeben sich aus dem Vergleich Fenster ↔ Typ ──
+const TYP_FIELDS=["fensterBauart","rahmenMaterial","baujahr","fensterBreite","fensterHoehe","rahmenProfiltiefe","ufWert","uwWert","beschlagTyp","dichtungAnzahl","dichtungMaterial"];
+const typOf=(p,f)=>(f&&f.typ&&((p&&p.typen)||[]).find(t=>t.id===f.typ))||null;
+// Felder ohne/mit doppeltem Schlüssel bekommen "k"+(++seq)
+function geoEnsureKeys(g,seq){g=normalizeGeo(g);let s=Math.max(seq|0,geoMaxKey(g));const seen=new Set();
+  const geo=geoMapLeaves(g,l=>{if(l.k&&!seen.has(l.k)){seen.add(l.k);return l;}const k="k"+(++s);seen.add(k);return {...l,k};});return {geo,seq:s};}
+function geoMaxKey(g){return geoLeaves(g).reduce((m,l)=>{const x=/^k(\d+)$/.exec(l.node.k||"");return x?Math.max(m,+x[1]):m;},0);}
+function geoStripKeys(g){return geoMapLeaves(g,l=>{const c={...l};delete c.k;return c;});}
+// Aufbau vergleichen: nur Verschachtelung (Topologie) bzw. mit Öffnungsart/Band/Rolle/Trennung (+ Anteile); nie vg/k
+function geoTopo(g){const s=n=>geoIsLeaf(n)?"0":n.dir+"["+n.kids.map(s).join(",")+"]";return s(normalizeGeo(g).tree);}
+function geoShape(g,withW){const s=n=>geoIsLeaf(n)?`${n.art}|${n.band}|${n.role}`:`${n.dir}${n.steg?":"+n.steg:""}${n.role?"@"+n.role:""}${withW?"("+n.w.join(",")+")":""}[${n.kids.map(s).join(",")}]`;return s(normalizeGeo(g).tree);}
+// Typ in Normalform (Migration/Import): Arrays und Objekte vorhanden, Skizze mit Schlüsseln
+function typNorm(t){const ek=geoEnsureKeys(geoStripVg((t&&t.geometrie)||newGeo()),t&&t.kSeq);
+  return {id:(t&&t.id)||uid(),kurz:(t&&t.kurz)||"",name:(t&&t.name)||"",farbe:(t&&t.farbe)||"",geometrie:ek.geo,kSeq:ek.seq,data:{...((t&&t.data)||{})},sources:{...((t&&t.sources)||{})},
+    rahmenmasse:JSON.parse(JSON.stringify((t&&t.rahmenmasse)||{})),photos:Array.isArray(t&&t.photos)?t.photos:[],docIds:Array.isArray(t&&t.docIds)?t.docIds:[],notizen:(t&&t.notizen)||""};}
+function geoStripVg(g){return geoMapLeaves(g,l=>({...l,vg:""}));}
+
 // ── Skizze führt: bei Fenstern mit Skizze gehört zu jedem Feld genau eine Verglasung (Nummern in Skizzen-Reihenfolge) ──
 // Neue Verglasung; Vorlage tpl liefert Glasangaben samt Quelle (keine Messwerte, Fotos, Bemerkung, «nicht messbar»)
 function vgNeu(tpl){return {id:uid(),nr:0,messungen:[],data:{...((tpl&&tpl.data)||{})},sources:{...((tpl&&tpl.sources)||{})},photos:[],notizen:""};}
@@ -362,9 +382,9 @@ async function storeExistingPhoto(meta,src){const blob=src instanceof Blob?src:d
   try{const img=await loadImg(blob);w=img.naturalWidth;h=img.naturalHeight;tblob=await toJpeg(scaledCanvas(img,TH_MAX),TH_Q);}catch(e){}
   const id=uid();await phPut({id,blob,tblob,w,h});const m={...meta,id,w,h,kb:Math.round(blob.size/1024)};delete m.data;delete m.file;return m;}
 async function photoBlob(ph){if(ph.data)return dataURLtoBlob(ph.data);const r=await phGet(ph.id);return r&&r.blob||null;}
-function photoLists(p){const out=[];(p.rooms||[]).forEach(r=>{out.push(r);(r.fenster||[]).forEach(f=>{out.push(f);(f.verglasungen||[]).forEach(v=>out.push(v));});});return out.filter(o=>Array.isArray(o.photos));}
+function photoLists(p){const out=[];(p.rooms||[]).forEach(r=>{out.push(r);(r.fenster||[]).forEach(f=>{out.push(f);(f.verglasungen||[]).forEach(v=>out.push(v));});});(p.typen||[]).forEach(t=>out.push(t));return out.filter(o=>Array.isArray(o.photos));}
 // Foto-IDs in einem Projekt/Raum/Fenster/Verglasungs-Teilbaum (nur Store-Fotos)
-function photoIdsIn(o){const s=[];const walk=x=>{if(!x)return;(x.photos||[]).forEach(ph=>{if(ph&&!ph.data)s.push(ph.id);});(x.docs||[]).forEach(d=>{if(d&&d.photoId)s.push(d.photoId);});(x.rooms||[]).forEach(walk);(x.fenster||[]).forEach(walk);(x.verglasungen||[]).forEach(walk);};walk(o);return s;}
+function photoIdsIn(o){const s=[];const walk=x=>{if(!x)return;(x.photos||[]).forEach(ph=>{if(ph&&!ph.data)s.push(ph.id);});(x.docs||[]).forEach(d=>{if(d&&d.photoId)s.push(d.photoId);});(x.typen||[]).forEach(walk);(x.rooms||[]).forEach(walk);(x.fenster||[]).forEach(walk);(x.verglasungen||[]).forEach(walk);};walk(o);return s;}
 const legacyCount=p=>photoLists(p).reduce((s,o)=>s+o.photos.filter(ph=>ph&&ph.data).length,0);
 async function migratePhotos(p,onStep){for(const o of photoLists(p)){const out=[];for(const ph of o.photos){if(ph&&ph.data){try{out.push(await storeExistingPhoto(ph,ph.data));}catch(e){out.push(ph);}onStep&&onStep();}else out.push(ph);}o.photos=out;}}
 // Nicht mehr referenzierte Bild-Blobs entfernen (z.B. nach Löschen von Räumen/Fenstern)
@@ -383,7 +403,9 @@ function photoEntries(p){const out=[];let n=0;sortedRooms(p).forEach(room=>{cons
     (fen.verglasungen||[]).forEach(vg=>{(vg.photos||[]).forEach(ph=>{n++;const fv=`${base}_${fnSafe(fen.nr)}_V${vg.nr}`;
       if(ph.ms&&MS_TYPES[ph.ms]){const T=MS_TYPES[ph.ms],m=(vg.messungen||[]).find(x=>x.id===ph.msId)||null; // Messfoto: Kurzname + Wert im Dateinamen, ohne Einheit („W/m²K" enthält „/")
         out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:"Messung "+T.label,ms:ph.ms,msId:ph.msId||"",wert:m?msLabel(m):"",name:`${fv}_Mess-${T.short}${m?"-"+fnSafe(String(m.wert)):""}_${n}.jpg`});}
-      else{const t=ph.isStempel?"Stempel":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,ms:"",msId:"",wert:"",name:`${fv}_${t}_${n}.jpg`});}});});});});return out;}
+      else{const t=ph.isStempel?"Stempel":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,ms:"",msId:"",wert:"",name:`${fv}_${t}_${n}.jpg`});}});});});});
+  (p.typen||[]).forEach(t=>(t.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Fenstertyp",room:{},fen:{nr:t.kurz||""},vg:null,typ:"Referenzfoto",ms:"",msId:"",wert:"",name:`Typ_${fnSafe(t.kurz)||"ohne"}_${n}.jpg`});}));   // am Ende: bestehende Dateinummern bleiben
+  return out;}
 
 // Unterlagen (Pläne, Details, Datenblätter …): Seiten als Bild im photos-Store (d.photoId). Grundrisse tragen Punkte
 // (room.pos / f.pos = [{docId,x,y}]), Ansichten Fenster-Rechtecke (f.pos = [{docId,x,y,w,h}]); x/y/w/h normiert 0..1 aufs Bild
@@ -400,7 +422,7 @@ const posOn=(o,docId)=>((o&&o.pos)||[]).find(q=>q.docId===docId)||null;
 function setPosIn(o,docId,q){const l=(o.pos||[]).filter(x=>x.docId!==docId);if(q)l.push({docId,...q});if(l.length)o.pos=l;else delete o.pos;}
 // Unterlage entfernen (mutiert p): Eintrag und alle Verortungen darauf; liefert die Bild-ID zum Löschen
 function delDocIn(p,docId){const d=(p.docs||[]).find(x=>x.id===docId);p.docs=(p.docs||[]).filter(x=>x.id!==docId);
-  (p.rooms||[]).forEach(r=>{setPosIn(r,docId,null);(r.fenster||[]).forEach(f=>setPosIn(f,docId,null));});return (d&&d.photoId)||null;}
+  (p.rooms||[]).forEach(r=>{setPosIn(r,docId,null);(r.fenster||[]).forEach(f=>setPosIn(f,docId,null));});(p.typen||[]).forEach(t=>{if((t.docIds||[]).includes(docId))t.docIds=t.docIds.filter(x=>x!==docId);});return (d&&d.photoId)||null;}
 // Dateinamen der Unterlagen in der ZIP (Ordner «unterlagen»), nummeriert in Anzeige-Reihenfolge
 function docEntries(p){return sortedDocs(p).map((d,i)=>({doc:d,name:`${String(i+1).padStart(2,"0")}_${fnSafe(docTitle(d).replace(/\s*·\s*/g," "))||"Unterlage"}.jpg`}));}
 
@@ -550,6 +572,9 @@ function migrateProj(p){if(!p||!Array.isArray(p.rooms))return false;let ch=false
   if(af.includes("fensterTyp")){p.activeFields=af.map(k=>k==="fensterTyp"?"fensterBauart":k).filter((k,i,a)=>a.indexOf(k)===i);ch=true;}
   if(geoNeu&&!(p.activeFields||[]).includes("geometrie")){p.activeFields=[...(p.activeFields||[]),"geometrie"];ch=true;}
   if(p.defaults&&"fensterTyp" in p.defaults){delete p.defaults.fensterTyp;ch=true;}
+  if(p.typen!==undefined&&!Array.isArray(p.typen)){delete p.typen;ch=true;}
+  if(Array.isArray(p.typen)){const nt=p.typen.map(typNorm);if(JSON.stringify(nt)!==JSON.stringify(p.typen)){p.typen=nt;ch=true;}}
+  const tids=new Set((p.typen||[]).map(t=>t.id));p.rooms.forEach(r=>(r.fenster||[]).forEach(f=>{if(f.typ&&!tids.has(f.typ)){delete f.typ;ch=true;}}));
   return ch;}
 // Projektdatei (ZIP oder JSON, auch alte JSON-Backups mit eingebetteten Fotos) lesen; Fotos landen mit neuen IDs im Store
 async function readProjectFile(file){const head=await file.slice(0,2).text();let d,files=null;
@@ -1342,8 +1367,9 @@ function App(){
         const curD=new Map((cur.docs||[]).map(x=>[x.id,x]));const addD=(d.docs||[]).filter(x=>!curD.has(x.id));
         const fillD=(d.docs||[]).filter(x=>curD.has(x.id)&&!curD.get(x.id).photoId&&x.photoId);   // vorhandene Unterlage ohne Bild: Bild übernehmen
         const dropD=(d.docs||[]).filter(x=>curD.has(x.id)&&!fillD.includes(x)).map(x=>x.photoId).filter(Boolean);
-        phDel([...skipped.flatMap(r=>photoIdsIn(r)),...dropD]);
-        mut(p=>{p.rooms=[...p.rooms,...added];p.docs=[...(p.docs||[]),...addD];fillD.forEach(x=>{const t=p.docs.find(y=>y.id===x.id);if(t)Object.assign(t,{photoId:x.photoId,w:x.w,h:x.h,kb:x.kb});});p.trakte=traktList(p);});
+        const curT=new Set((cur.typen||[]).map(t=>t.id)),addT=(d.typen||[]).filter(t=>!curT.has(t.id)),dropT=(d.typen||[]).filter(t=>curT.has(t.id)).flatMap(t=>photoIdsIn(t));
+        phDel([...skipped.flatMap(r=>photoIdsIn(r)),...dropD,...dropT]);
+        mut(p=>{p.rooms=[...p.rooms,...added];p.docs=[...(p.docs||[]),...addD];if(addT.length)p.typen=[...(p.typen||[]),...addT];fillD.forEach(x=>{const t=p.docs.find(y=>y.id===x.id);if(t)Object.assign(t,{photoId:x.photoId,w:x.w,h:x.h,kb:x.kb});});p.trakte=traktList(p);});
         flash(`Zusammengeführt: ${added.length} Räume neu`+(skipped.length?`, ${skipped.length} bereits vorhanden`:"")+(addD.length?`, ${addD.length} Unterlagen neu`:""));}
       else{d.id=uid();save(d);setView("survey");flash(`Projekt «${d.name||"Import"}» importiert`);}
     }catch(e){console.error(e);flash("Import fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");};
