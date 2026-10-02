@@ -284,6 +284,9 @@ function typAssign(f,t,o){o=o||{};f.typ=t.id;const set=[];
 function typFromFen(f,o){o=o||{};const data={},sources={};TYP_FIELDS.forEach(k=>{const v=_sv((f.data||{})[k]);if(v){data[k]=v;if((f.sources||{})[k])sources[k]=f.sources[k];}});
   return typNorm({kurz:o.kurz||"",name:o.name||"",geometrie:f.geometrie||newGeo(),data,sources,rahmenmasse:f.rahmenmasse||{}});}
 function nextTypKurz(p){let mx=0;((p&&p.typen)||[]).forEach(t=>{const m=/^T(\d+)$/i.exec(_sv(t.kurz));if(m)mx=Math.max(mx,+m[1]);});return "T"+String(mx+1).padStart(2,"0");}
+// Neue Typ-Skizze aus der geänderten Skizze eines Typ-Fensters: vorhandene Feldschlüssel bleiben (nach einer Vorlage ohne Schlüssel: der Reihe nach), neue Felder neue Schlüssel
+function typGeoFromEdit(oldG,ng,kSeq){let g=normalizeGeo(ng);if(!geoLeaves(g).some(l=>l.node.k)){const ok=geoLeaves(oldG||newGeo()).map(l=>l.node.k);let i=0;g=geoMapLeaves(g,l=>({...l,k:ok[i++]||""}));}
+  return geoEnsureKeys(geoStripVg(g),kSeq);}
 // Nummernstamm vor «-» bzw. Leerzeichen, nur mit Ziffer (FE09-E.01 → FE09; F1, S01 → keiner)
 function typStem(nr){const m=String(nr||"").trim().match(/^([^-\s]+)[-\s]/);return m&&/\d/.test(m[1])?m[1]:"";}
 // Vorschläge: Fenster ohne Typ je Nummernstamm; Aufteilung = häufigster Aufbau, Angaben = bei allen gleiche Werte
@@ -1345,7 +1348,7 @@ function App(){
   // Plan-Ansicht: gewählte Unterlage, Bearbeiten-Modus, Werkzeug (nav|punkt|rechteck), Auswahl zum Verorten, Fokus, Rücksprung
   const[planId,setPlanId]=useState(null);const[planEdit,setPlanEdit]=useState(false);const[planTool,setPlanTool]=useState("nav");
   const[planSel,setPlanSel]=useState(null);const[planFocus,setPlanFocus]=useState(null);const[planRet,setPlanRet]=useState({view:"survey"});   // Rücksprung aus dem Plan: Ansicht + Raum/Fenster/Verglasung beim ersten Öffnen
-  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);const[newF,setNewF]=useState(null);const[msMove,setMsMove]=useState(null);const[typEd,setTypEd]=useState(null);const[typAsk,setTypAsk]=useState(null);const[typAsg,setTypAsg]=useState(null);const[typSug,setTypSug]=useState(null);const[pv,setPv]=useState(null);const[typFrom,setTypFrom]=useState("setup");   // Fenstertypen: Typ-Blatt {id,draft}, Rückfrage Weitergabe, Zuweisen, Vorschläge, Bildbetrachter {photos,title}   // msMove: {mId} = Messwert verschieben   // newF: Dialog «Neues Fenster» {rId,refId,nr,teilung}   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
+  const[planAlle,setPlanAlle]=useState(false);const[planMenu,setPlanMenu]=useState(null);const[fenEd,setFenEd]=useState(null);const[newF,setNewF]=useState(null);const[msMove,setMsMove]=useState(null);const[typEd,setTypEd]=useState(null);const[typAsk,setTypAsk]=useState(null);const[typAsg,setTypAsg]=useState(null);const[typSug,setTypSug]=useState(null);const[pv,setPv]=useState(null);const[typFrom,setTypFrom]=useState("setup");const[scopeAsk,setScopeAsk]=useState(null);const[geoScope,setGeoScope]=useState(null);   // Skizze eines Typ-Fensters ändern: für wen? (je Fenster gemerkt, bis Ansicht/Blatt wechselt)   // Fenstertypen: Typ-Blatt {id,draft}, Rückfrage Weitergabe, Zuweisen, Vorschläge, Bildbetrachter {photos,title}   // msMove: {mId} = Messwert verschieben   // newF: Dialog «Neues Fenster» {rId,refId,nr,teilung}   // fenEd: {fId} = Blatt «Fenster bearbeiten» offen
   const[planNew,setPlanNew]=useState(null);
   const[planSerie,setPlanSerie]=useState(null);   // Serienmodus beim Anlegen im Plan {rId,lastNr,nVg}
   const[fromPlan,setFromPlan]=useState(false);
@@ -1375,6 +1378,7 @@ function App(){
   useEffect(()=>{setHasUnsaved(numVal.length>0);},[numVal]);
   useEffect(()=>{setAufIn(null);setSzrSel(1);},[vg?.id]);   // neue Verglasung: Aufbau-Vorschlag und SZR 1
   useEffect(()=>{if(!["plan","room","measure","fenster"].includes(view))setFromPlan(false);},[view]);
+  useEffect(()=>{setGeoScope(null);},[view,fenEd&&fenEd.fId]);
 
   const guardNav=(action)=>{
     if(hasUnsaved){setConfirmNav({action});}
@@ -1545,7 +1549,11 @@ function App(){
   const addVgToFen=(rId,fId)=>mut(p=>{const f=gF(gR(p,rId),fId);if(f){if(!f.verglasungen)f.verglasungen=[];f.verglasungen.push({...vgNeu(),nr:(f.verglasungen.length||0)+1});}});
   // Skizze ändern: Verglasungen folgen (1 Feld = 1 Verglasung); vor dem Löschen von Verglasungen mit Inhalt oder unerwartet vielen nachfragen.
   // op.ok = Rückfrage schon gestellt. Rückgabe false = abgebrochen
-  const geoEdit=(rId,fId,ng,op)=>{const cf=gF(gR(projRef.current,rId),fId);if(!cf)return false;const res=fenGeoApply(cf,ng,op);const rmv=res.removed;
+  const geoEdit=(rId,fId,ng,op)=>{const cf=gF(gR(projRef.current,rId),fId);if(!cf)return false;
+    const ty=typOf(projRef.current,cf),cg=cf.geometrie||newGeo();   // Fenster mit Typ und Typ-Aufbau: Aufbau-Änderung gilt für dieses Fenster, alle des Typs oder einen neuen Typ
+    if(ty&&!(op&&(op.t==="pick"||op.t==="sync"||op.scoped))&&geoShape(ng)!==geoShape(cg)&&geoShape(cg)===geoShape(ty.geometrie)){const sc=geoScope&&geoScope.fId===fId?geoScope.scope:null;
+      if(sc==="typ"){typFromEdit(cf,ty,ng);return false;}if(sc!=="fen"){setScopeAsk({rId,fId,ng,op});return false;}}
+    const res=fenGeoApply(cf,ng,op);const rmv=res.removed;
     if(rmv.length&&(rmv.length>res.expect||(!(op&&op.ok)&&rmv.some(v=>vgInhalt(v))))){const info=rmv.map(v=>{const i=vgInhalt(v);return `V${v.nr}${i?" ("+i+")":""}`;}).join(", ");
       if(!confirm(`Dabei ${rmv.length===1?"wird eine Verglasung":"werden "+rmv.length+" Verglasungen"} gelöscht: ${info}. Fortfahren?`))return false;}
     if(rmv.length)phDel(rmv.flatMap(v=>photoIdsIn(v)));
@@ -1673,6 +1681,7 @@ function App(){
       mode=confirm(`Skizze von Typ ${t.kurz} übernehmen?`+(lost.length?` Dabei entfallen: ${lost.join(", ")}.`:" Die Verglasungen werden den Feldern der Reihe nach zugeordnet.")+"\n\nOK = Typ-Skizze · Abbrechen = eigene Skizze behalten (gilt als Abweichung)")?"typ":"eigen";}
     let res=null;mut(q=>{const ff=gF(gR(q,rId),fId);if(ff)res=typAssign(ff,t,{geo:mode});});if(res&&res.removed.length)phDel(res.removed.flatMap(v=>photoIdsIn(v)));flash(`Typ ${t.kurz} zugewiesen`);};
   const unassignTyp=(rId,fId)=>{mut(q=>{const f=gF(gR(q,rId),fId);if(f)delete f.typ;});flash("Typ gelöst");};
+  const saveAsTypFrom=(rId,fId)=>saveAsTyp(rId,fId);
   const saveAsTyp=(rId,fId)=>{const p=projRef.current,f=gF(gR(p,rId),fId);if(!f)return;const st=typStem(f.nr),def=st&&!(p.typen||[]).some(t=>_sv(t.kurz).toLowerCase()===st.toLowerCase())?st:nextTypKurz(p);
     const kurz=prompt("Kürzel des neuen Fenstertyps",def);if(kurz==null||!kurz.trim())return;const t=typFromFen(f,{kurz:kurz.trim()});
     mut(q=>{q.typen=[...(q.typen||[]),t];const ff=gF(gR(q,rId),fId);if(ff)typAssign(ff,t,{geo:"typ"});});flash(`Typ ${t.kurz} angelegt`);setTypEd({id:t.id,draft:JSON.parse(JSON.stringify(t))});};
@@ -1742,8 +1751,20 @@ function App(){
       {!list.length?<div style={{fontSize:13,color:C.tx3,marginBottom:10}}>Keine Vorschläge (keine Nummern mit Stamm wie «FE09-…» ohne Typ).</div>
       :<div style={{maxHeight:"45vh",overflowY:"auto",border:`1px solid ${C.bd}`,borderRadius:8,padding:"4px 8px",marginBottom:10}}>{list.map(x=><label key={x.kurz} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={sel.has(x.kurz)} onChange={()=>tog(x.kurz)}/><b>{x.kurz}</b><span style={{color:C.tx2}}>{x.n} Fenster</span>{x.abw>0&&<span style={{color:C.warn,fontSize:11}}>{x.abw} mit anderer Skizze</span>}</label>)}</div>}
       <button style={{...$.btn,...$.bP,...$.bBl}} disabled={!list.length||!sel.size} onClick={go}>{sel.size} Typen anlegen und zuweisen</button></div></div>;};
+
+  // Skizzen-Änderung an einem Typ-Fenster für alle Fenster des Typs: neue Typ-Skizze, Vorschau wie im Typ-Blatt
+  const typFromEdit=(cf,ty,ng)=>{const k=typGeoFromEdit(cf.geometrie,ng,ty.kSeq),d=typNorm({...ty,geometrie:k.geo,kSeq:k.seq});setTypAsk({d,plan:typPlan(projRef.current,ty.id,d)});};
+  const scopeModal=()=>{if(!scopeAsk||!proj)return null;const a=scopeAsk,cf=gF(gR(proj,a.rId),a.fId),ty=cf&&typOf(proj,cf);if(!cf||!ty)return null;const n=typFenster(proj,ty.id).length;
+    const go=sc=>{setScopeAsk(null);setGeoScope({fId:a.fId,scope:sc==="neu"?"fen":sc});if(sc==="typ"){typFromEdit(cf,ty,a.ng);return;}
+      const ok=geoEdit(a.rId,a.fId,a.ng,{...(a.op||{}),scoped:true});if(ok!==false&&sc==="neu")saveAsTypFrom(a.rId,a.fId);};
+    return <div style={{...$.modal,zIndex:210}} onClick={()=>setScopeAsk(null)}><div style={$.modalC} onClick={ev=>ev.stopPropagation()}><div style={$.modalH}/><div style={{fontWeight:800,fontSize:16,marginBottom:6}}>Skizze ändern – Fenstertyp {ty.kurz}</div>
+      <div style={{fontSize:12,color:C.tx2,marginBottom:12}}>{cf.nr} gehört zum Typ {ty.kurz} ({n} Fenster). Wofür gilt die Änderung?</div>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}><button style={{...$.btn,...$.bP}} onClick={()=>go("typ")}>Alle {n} Fenster des Typs {ty.kurz} (Vorschau)</button>
+        <button style={{...$.btn,...$.bO}} onClick={()=>go("fen")}>Nur {cf.nr} (weicht dann vom Typ ab)</button>
+        <button style={{...$.btn,...$.bO}} onClick={()=>go("neu")}>Nur {cf.nr} und als neuen Typ speichern</button>
+        <button style={{...$.btn,...$.bO}} onClick={()=>setScopeAsk(null)}>Abbrechen</button></div></div></div>;};
   // Überlagerungen, die in mehreren Ansichten gebraucht werden
-  const ovl=()=><>{newFenModal()}{fenSheet()}{typSheet()}{typAskModal()}{typAsgModal()}{typSugModal()}{pv&&<PhotoViewer photos={pv.photos} start={0} title={pv.title} onClose={()=>setPv(null)}/>}</>;
+  const ovl=()=><>{newFenModal()}{fenSheet()}{typSheet()}{typAskModal()}{typAsgModal()}{typSugModal()}{scopeModal()}{pv&&<PhotoViewer photos={pv.photos} start={0} title={pv.title} onClose={()=>setPv(null)}/>}</>;
 
   if(view==="home")return <div className="app" style={$.app}><div style={$.hdr}><div style={{flex:1}}><div style={{fontSize:19,fontWeight:800}}>🔍 FensterCheck</div><div style={{fontSize:10,color:C.tx2,letterSpacing:"0.5px"}}>FENSTERERFASSUNG</div></div><button style={$.hdrB} onClick={()=>setView("info")}>ℹ️</button><button style={$.hdrB} onClick={()=>setView("settings")}>⚙</button></div><div className="body" style={$.body}>
     {projects.length>0&&projects.map(p=>{const s=pSt(p);return <div key={p.id} style={$.li} onClick={()=>{setProj(p);setView("survey");}}><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,marginBottom:2}}>{p.name||"Unbenannt"}</div><div style={{fontSize:12,color:C.tx2}}>{p.gebaeude||"—"} · {s.rooms}R · {s.m}M</div></div><div style={{display:"flex",gap:6,alignItems:"center"}}><button style={{...$.btn,...$.bO,...$.bS,padding:"5px 8px"}} onClick={e=>{e.stopPropagation();setProj(p);setView("setup");}}>⚙</button><span style={{color:C.tx3}}>›</span></div></div>;})}
@@ -2083,7 +2104,9 @@ function App(){
       if(d.t==="zustand")return <ZustInp key={k} modus={p.zustandModus} value={f.zustandRahmen||""} onChange={v=>setZu(rm.id,f.id,v)}/>;
       if(d.t==="geo")return <div key={k} style={{marginBottom:8}}><GeoEditor geo={f.geometrie} onChange={(ng,op)=>geoEdit(rm.id,f.id,ng,op)} verglasungen={f.verglasungen} aspect={geoAspect(f.data?.fensterBreite,f.data?.fensterHoehe)} onJump={vgId=>{const vv=(f.verglasungen||[]).find(x=>x.id===vgId);if(vv)openVg(vv);}} onSync={()=>geoEdit(rm.id,f.id,f.geometrie,{t:"sync"})} getVorbilder={()=>geoVorbilder(p,f.id)} onClear={()=>clearGeo(rm,f)}/></div>;
       if(d.t==="masse")return <div key={k} style={{marginBottom:8}}><label style={$.lbl}>{d.label}</label><RahmenMasse val={f.rahmenmasse} onChange={nm=>setMasse(rm.id,f.id,nm)}/></div>;
-      return <FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;};
+      const ty=TYP_FIELDS.includes(k)?typOf(p,f):null,tv=ty?_sv((ty.data||{})[k]):"",fv=_sv(f.data?.[k]);   // Typ-Feld mit anderem Wert: Hinweis + zurücksetzen
+      const inp=<FldInp key={k} k={k} def={d} value={f.data?.[k]||""} source={f.sources?.[k]||""} onVal={v=>setFV(rm.id,f.id,null,k,v)} onSrc={sv=>setFS(rm.id,f.id,null,k,sv)} defaultVal={getDef(k,f,null)} showSrc={proj?.showSrc}/>;
+      return tv&&fv&&tv!==fv?<div key={k}>{inp}<div style={{fontSize:11,color:C.warn,margin:"-4px 0 8px",display:"flex",alignItems:"center",gap:6}}>≠ Typ {ty.kurz}: {tv}<button style={{...$.btn,...$.bO,...$.bS,padding:"2px 8px",fontSize:11}} onClick={()=>{setFV(rm.id,f.id,null,k,tv);setFS(rm.id,f.id,null,k,(ty.sources||{})[k]||"");}}>↺ Typwert</button></div></div>:inp;};
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
     return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster bearbeiten: Nummer, Raum, Aufteilung" onClick={()=>setFenEd({fId:f.id})}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{(f.verglasungen||[]).length>0&&f.verglasungen.every(v=>vgDone(p,f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}{hasPlanFor("fen",rm,f)&&<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>planFor("fen",rm,f)} title="Im Plan zeigen / verorten">🗺</button>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px",color:C.err}} title="Fenster löschen" onClick={()=>{const i=inhalt(f);if(confirm(`Fenster ${f.nr} löschen?`+(i?` Es enthält ${i}.`:"")+" Das lässt sich nicht rückgängig machen."))delFen(rm.id,f.id);}}>🗑</button></div></div>
         {typRow(p,rm,f,false)}
