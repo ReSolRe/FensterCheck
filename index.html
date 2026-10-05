@@ -1691,7 +1691,8 @@ function App(){
     return <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",padding:"7px 9px",background:C.sf2,borderRadius:8,marginBottom:8,fontSize:12}}>
       {t?<><span>Typ <b style={{color:C.ac}}>{t.kurz}</b>{t.name?" · "+t.name:""}</span><span style={{color:dt?C.warn:C.ok,flex:1,minWidth:90}}>{dt?"abweichend: "+dt:"entspricht dem Typ"}</span>
         {(t.photos||[]).length>0&&<button style={sb} onClick={()=>setPv({photos:t.photos,title:"Typ "+t.kurz})}>📷</button>}
-        {(t.docIds||[]).map(id=>(p.docs||[]).find(d=>d.id===id)).filter(d=>d&&d.photoId).map(d=><button key={d.id} style={sb} title={docTitle(d)} onClick={()=>setPv({photos:[{id:d.photoId,w:d.w,h:d.h,zeit:d.erstellt}],title:docTitle(d)})}>📄 {DOC_ARTEN[d.art]?DOC_ARTEN[d.art].label:"Unterlage"}</button>)}
+        {(()=>{const ds=(t.docIds||[]).map(id=>(p.docs||[]).find(d=>d.id===id)).filter(d=>d&&d.photoId);   // Unterlagen des Typs: ein Knopf, Seiten im Betrachter blättern
+          return ds.length?<button style={sb} title={ds.map(docTitle).join(" · ")} onClick={()=>setPv({photos:ds.map(d=>({id:d.photoId,w:d.w,h:d.h,zeit:d.erstellt})),title:ds.length===1?docTitle(ds[0]):`Typ ${t.kurz} · ${ds.length} Unterlagen`})}>📄 {ds.length===1?(DOC_ARTEN[ds[0].art]?DOC_ARTEN[ds[0].art].label:"Unterlage"):`${ds.length} Unterlagen`}</button>:null;})()}
         <button style={sb} onClick={()=>openTyp(t.id)}>Typ öffnen</button><button style={sb} onClick={()=>unassignTyp(rm.id,f.id)}>lösen</button></>
       :<span style={{color:C.tx2,flex:1}}>Kein Fenstertyp</span>}
       {ts.length>0&&<select style={{...$.sel,...$.selS,width:"auto",maxWidth:170}} value="" onChange={e=>e.target.value&&assignTyp(rm.id,f.id,e.target.value)}><option value="">{t?"Typ ändern …":"Typ zuweisen …"}</option>{ts.filter(x=>x.id!==f.typ).map(x=><option key={x.id} value={x.id}>{x.kurz}{x.name?" · "+x.name:""}</option>)}</select>}
