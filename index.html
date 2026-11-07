@@ -443,7 +443,7 @@ const phDel=ids=>ids&&ids.length?idb(PSTORE,"readwrite",s=>{ids.forEach(id=>s.de
 const phKeys=()=>idb(PSTORE,"readonly",s=>s.getAllKeys());
 
 // Fotos: Vollbild (max. PH_MAX px, JPEG) + Vorschaubild als Blobs im photos-Store.
-// Im Projekt steht nur {id,zeit,w,h,kb,isStempel?,ms?,msId?} (ms/msId: Messfoto zu einem Messwert). Alte Fotos haben noch "data" (DataURL) und werden migriert.
+// Im Projekt steht nur {id,zeit,w,h,kb,isStempel?,ms?,msId?,art?,orig?,exif?,mass?} (ms/msId: Messfoto zu einem Messwert; art: "mass" Massfoto, "reflex" Reflexfoto). Alte Fotos haben noch "data" (DataURL) und werden migriert.
 const PH_MAX=1920,PH_Q=0.82,TH_MAX=320,TH_Q=0.7;
 function loadImg(src){return new Promise((res,rej)=>{const img=new Image();const isB=src instanceof Blob;const u=isB?URL.createObjectURL(src):src;
   img.onload=()=>{if(isB)URL.revokeObjectURL(u);res(img);};img.onerror=()=>{if(isB)URL.revokeObjectURL(u);rej(new Error("Bild konnte nicht gelesen werden"));};img.src=u;});}
@@ -457,7 +457,64 @@ async function storeNewPhoto(file){const img=await loadImg(file);const full=scal
 async function storeExistingPhoto(meta,src){const blob=src instanceof Blob?src:dataURLtoBlob(src);let w=meta.w,h=meta.h,tblob=null;
   try{const img=await loadImg(blob);w=img.naturalWidth;h=img.naturalHeight;tblob=await toJpeg(scaledCanvas(img,TH_MAX),TH_Q);}catch(e){}
   const id=uid();await phPut({id,blob,tblob,w,h});const m={...meta,id,w,h,kb:Math.round(blob.size/1024)};delete m.data;delete m.file;return m;}
-async function photoBlob(ph){if(ph.data)return dataURLtoBlob(ph.data);const r=await phGet(ph.id);return r&&r.blob||null;}
+// ── Foto-Vermessung (Paket 3): nur Massfotos behalten das Original unverändert (Store: oblob, ow, oh; Metadaten orig, exif); alle anderen Fotos bleiben bei storeNewPhoto ──
+// Schalter je Gerät, Standard aus. Vorhandene Massfotos bleiben auch ausgeschaltet sichtbar und werden exportiert.
+const FV_KEY="fc_fotovermessung";
+function fvGet(){try{return localStorage.getItem(FV_KEY)==="1";}catch(e){return false;}}
+function fvSet(on){try{if(on)localStorage.setItem(FV_KEY,"1");else localStorage.removeItem(FV_KEY);}catch(e){}}
+const ORIG_KOPF=1048576;   // so viel wird für Format, Bildmasse und EXIF gelesen (Pixel 9a: Bilddaten beginnen nach rund 120 KB)
+// Dateiformat am Dateianfang: "jpeg" | "png" | "heic" | "webp" | ""
+function fotoFormat(u){if(!u||u.length<12)return "";if(u[0]===0xFF&&u[1]===0xD8&&u[2]===0xFF)return "jpeg";if(u[0]===0x89&&u[1]===0x50&&u[2]===0x4E&&u[3]===0x47)return "png";
+  const tx=(a,b)=>String.fromCharCode(...u.subarray(a,b));if(tx(0,4)==="RIFF"&&tx(8,12)==="WEBP")return "webp";
+  if(tx(4,8)==="ftyp"&&/^(heic|heix|hevc|hevx|heim|heis|hevm|hevs|mif1|msf1)$/.test(tx(8,12)))return "heic";return "";}
+// EXIF aus einem TIFF-Block ab t: make, model, orient, f [mm], f35 [mm], datum; fehlende Angaben entfallen. Liest nie über end hinaus.
+function exifLesen(u,t,end){const out={};if(t+8>end)return out;const le=u[t]===0x49&&u[t+1]===0x49;if(!le&&!(u[t]===0x4D&&u[t+1]===0x4D))return out;
+  const r16=o=>o+2<=end?(le?u[o]|(u[o+1]<<8):(u[o]<<8)|u[o+1]):0;
+  const r32=o=>o+4<=end?(le?u[o]+u[o+1]*256+u[o+2]*65536+u[o+3]*16777216:u[o]*16777216+u[o+1]*65536+u[o+2]*256+u[o+3]):0;
+  if(r16(t+2)!==42)return out;const BYTES={2:1,3:2,4:4,5:8};
+  const wert=e=>{const ty=r16(e+2),cnt=r32(e+4),s=(BYTES[ty]||0)*cnt;if(!s)return null;const p=s<=4?e+8:t+r32(e+8);if(p+s>end)return null;
+    if(ty===2){let x="";for(let k=0;k<cnt&&u[p+k];k++)x+=String.fromCharCode(u[p+k]);return x.trim()||null;}
+    if(ty===3)return r16(p);if(ty===4)return r32(p);const d=r32(p+4);return d?r32(p)/d:null;};
+  const ifd=(o,fn)=>{const a=t+o;if(!o||a+2>end)return;const c=r16(a);for(let k=0;k<c;k++){const e=a+2+12*k;if(e+12>end)break;fn(r16(e),e);}};
+  let sub=0;ifd(r32(t+4),(tag,e)=>{if(tag===0x010F)out.make=wert(e);else if(tag===0x0110)out.model=wert(e);else if(tag===0x0112)out.orient=wert(e);else if(tag===0x8769)sub=wert(e);});
+  ifd(sub,(tag,e)=>{if(tag===0x920A){const f=wert(e);if(f)out.f=Math.round(f*1000)/1000;}else if(tag===0xA405)out.f35=wert(e);else if(tag===0x9003)out.datum=wert(e);});
+  Object.keys(out).forEach(k=>{if(!out[k])delete out[k];});return out;}
+// JPEG-Kopf: Bildmasse aus dem ersten SOF (Sensorlage), EXIF aus dem APP1 mit «Exif» (weitere APP1 sind XMP). Wirft nie.
+function jpegMeta(u){const out={w:0,h:0,exif:{}};if(!u||u[0]!==0xFF||u[1]!==0xD8)return out;const n=u.length;let i=2,ex=false;
+  while(i+4<=n){if(u[i]!==0xFF){i++;continue;}const m=u[i+1];if(m===0xFF){i++;continue;}if(m===0xDA||m===0xD9)break;if(m===0||m===1||(m>=0xD0&&m<=0xD7)){i+=2;continue;}
+    const L=(u[i+2]<<8)|u[i+3];if(L<2)break;
+    if(m>=0xC0&&m<=0xCF&&m!==0xC4&&m!==0xC8&&m!==0xCC){if(!out.w&&i+9<=n){out.h=(u[i+5]<<8)|u[i+6];out.w=(u[i+7]<<8)|u[i+8];}}
+    else if(!ex&&m===0xE1&&i+10<=n&&u[i+4]===0x45&&u[i+5]===0x78&&u[i+6]===0x69&&u[i+7]===0x66&&u[i+8]===0){ex=true;out.exif=exifLesen(u,i+10,Math.min(n,i+2+L));}
+    i+=2+L;}
+  return out;}
+// Bildmasse in Anzeigelage (Orientation 5–8 = um 90° gedreht)
+const anzeigeMass=(w,h,o)=>o>=5&&o<=8?[h,w]:[w,h];
+const origExt=ph=>ph&&ph.orig&&ph.orig.mime==="image/png"?"png":"jpg";
+// Aufnahmedaten eines Massfotos für die Infozeile
+function massInfo(ph){const o=(ph&&ph.orig)||{},e=(ph&&ph.exif)||{},a=[];if(o.w)a.push(`${o.w}×${o.h} px`);if(o.kb)a.push((o.kb/1024).toFixed(1)+" MB");const g=e.model||e.make;if(g)a.push(g);if(e.f35)a.push(e.f35+" mm");else if(e.f)a.push(e.f+" mm");return a.join(" · ");}
+// Hinweise zum Aufnahmemodus; die Kalibrierung gilt nur für Gerät, Modus und Format (keine Sperre)
+function massHinweise(ph){const o=(ph&&ph.orig)||{},e=(ph&&ph.exif)||{},a=[];if(!o.w||!o.h)return a;const mp=o.w*o.h/1e6,q=Math.max(o.w,o.h)/Math.min(o.w,o.h);
+  if(mp>20)a.push(`${Math.round(mp)} MP: Standardmodus (ca. 12 MP) verwenden, die Kalibrierung gilt nur für diesen Modus.`);else if(mp<6)a.push(`Nur ${mp.toFixed(1)} MP: Foto vermutlich verkleinert, volle Auflösung verwenden.`);
+  if(Math.abs(q-16/9)<0.02)a.push("16:9 ist ein Zuschnitt: Kamera auf 4:3 stellen, die Kalibrierung gilt nur für dieses Format.");
+  if(o.h>o.w)a.push("Hochformat: nur mit eigener Kalibrierung für dieses Format auswertbar.");
+  if(!e.make&&!e.model)a.push("Keine Kameradaten (EXIF): Kamera beim Messen von Hand zuordnen.");
+  if(o.lage)a.push("Bildlage weicht von den Dateiangaben ab: bitte melden.");return a;}
+// Gemeinsamer Kern: Datei unverändert als oblob, dazu Anzeige und Vorschau wie bei allen Fotos
+async function origSpeichern(src){const kopf=new Uint8Array(await src.slice(0,ORIG_KOPF).arrayBuffer()),fmt=fotoFormat(kopf);
+  if(fmt!=="jpeg"&&fmt!=="png"){const e=new Error(fmt==="heic"?"HEIC/HEIF kann der Browser nicht lesen: Kamera auf JPEG stellen und neu aufnehmen.":"Format nicht lesbar: Massfotos müssen JPEG oder PNG sein.");e.fuerNutzer=true;throw e;}
+  const m=fmt==="jpeg"?jpegMeta(kopf):{w:0,h:0,exif:{}},mime=fmt==="png"?"image/png":"image/jpeg";
+  const img=await loadImg(src),ow=img.naturalWidth,oh=img.naturalHeight,full=scaledCanvas(img,PH_MAX),blob=await toJpeg(full,PH_Q),tblob=await toJpeg(scaledCanvas(img,TH_MAX),TH_Q);
+  const [ew,eh]=anzeigeMass(m.w,m.h,m.exif.orient||1),orig={w:ow,h:oh,kb:Math.round(src.size/1024),mime};if(m.w&&(ew!==ow||eh!==oh))orig.lage=1;   // Browser hat die Orientation anders angewendet als erwartet
+  const id=uid();await phPut({id,blob,tblob,w:full.width,h:full.height,oblob:new Blob([src],{type:mime}),ow,oh});return {id,w:full.width,h:full.height,kb:Math.round(blob.size/1024),orig,exif:m.exif};}
+async function storeOrigPhoto(file){return {...await origSpeichern(file),zeit:new Date().toISOString(),art:"mass"};}
+// Import aus der ZIP: Original wieder als oblob, Anzeige neu erzeugt; Metadaten und Messprotokoll (ph.mass) bleiben
+async function storeImportedOrig(meta,blob){const r={...meta,...await origSpeichern(blob)};delete r.file;delete r.data;delete r.ohneBild;return r;}
+// Massfoto ohne Bild (JSON-Sicherung): Metadaten bleiben, Anzeige «Original fehlt». Immer neue ID, sonst löscht das Zusammenführen das lokale Original derselben ID
+function massOhneBild(meta){const r={...meta,id:uid(),ohneBild:1};delete r.file;delete r.data;return r;}
+// Massfotos über alle Projekte (Speicheranzeige)
+function origKbIn(projects){let kb=0,n=0;(projects||[]).forEach(p=>photoLists(p).forEach(o=>o.photos.forEach(ph=>{if(ph&&ph.orig&&!ph.ohneBild){kb+=ph.orig.kb||0;n++;}})));return {kb,n};}
+// {orig:true}: nur das Original; ein Massfoto darf nie still durch die 1920-px-Fassung ersetzt werden
+async function photoBlob(ph,o){if(ph.data)return dataURLtoBlob(ph.data);const r=await phGet(ph.id);if(!r)return null;return (o&&o.orig?r.oblob:r.blob)||null;}
 function photoLists(p){const out=[];(p.rooms||[]).forEach(r=>{out.push(r);(r.fenster||[]).forEach(f=>{out.push(f);(f.verglasungen||[]).forEach(v=>out.push(v));});});(p.typen||[]).forEach(t=>out.push(t));return out.filter(o=>Array.isArray(o.photos));}
 // Foto-IDs in einem Projekt/Raum/Fenster/Verglasungs-Teilbaum (nur Store-Fotos)
 function photoIdsIn(o){const s=[];const walk=x=>{if(!x)return;(x.photos||[]).forEach(ph=>{if(ph&&!ph.data)s.push(ph.id);});(x.docs||[]).forEach(d=>{if(d&&d.photoId)s.push(d.photoId);});(x.typen||[]).forEach(walk);(x.rooms||[]).forEach(walk);(x.fenster||[]).forEach(walk);(x.verglasungen||[]).forEach(walk);};walk(o);return s;}
@@ -475,11 +532,11 @@ function sortedRooms(p){const tl=traktList(p);const ti=r=>{const i=tl.indexOf(r.
 const fnSafe=s=>String(s||"").trim().replace(/[\\/:*?"<>|]+/g,"-").replace(/\s+/g,"_");
 function photoEntries(p){const out=[];let n=0;sortedRooms(p).forEach(room=>{const base=(room.trakt?fnSafe(room.trakt)+"_":"")+(fnSafe(room.geschoss)||"x")+"_"+(fnSafe(room.raumnummer||room.raumId)||"Raum");
   (room.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Raum",room,fen:null,vg:null,typ:"Raum",name:`${base}_Raum_${n}.jpg`});});
-  (room.fenster||[]).forEach(fen=>{(fen.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Fenster",room,fen,vg:null,typ:"Fenster",name:`${base}_${fnSafe(fen.nr)}_${n}.jpg`});});
+  (room.fenster||[]).forEach(fen=>{(fen.photos||[]).forEach(ph=>{n++;const ma=ph.art==="mass";out.push({ph,n,ebene:"Fenster",room,fen,vg:null,typ:ma?"Massfoto":"Fenster",name:`${base}_${fnSafe(fen.nr)}_${ma?"Mass_":""}${n}.${origExt(ph)}`});});
     (fen.verglasungen||[]).forEach(vg=>{(vg.photos||[]).forEach(ph=>{n++;const fv=`${base}_${fnSafe(fen.nr)}_V${vg.nr}`;
       if(ph.ms&&MS_TYPES[ph.ms]){const T=MS_TYPES[ph.ms],m=(vg.messungen||[]).find(x=>x.id===ph.msId)||null; // Messfoto: Kurzname + Wert im Dateinamen, ohne Einheit („W/m²K" enthält „/")
         out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:"Messung "+T.label,ms:ph.ms,msId:ph.msId||"",wert:m?msLabel(m):"",name:`${fv}_Mess-${T.short}${m?"-"+fnSafe(String(m.wert)):""}_${n}.jpg`});}
-      else{const t=ph.isStempel?"Stempel":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,ms:"",msId:"",wert:"",name:`${fv}_${t}_${n}.jpg`});}});});});});
+      else{const t=ph.isStempel?"Stempel":ph.art==="reflex"?"Reflex":"Verglasung";out.push({ph,n,ebene:"Verglasung",room,fen,vg,typ:t,ms:"",msId:"",wert:"",name:`${fv}_${t}_${n}.jpg`});}});});});});
   (p.typen||[]).forEach(t=>(t.photos||[]).forEach(ph=>{n++;out.push({ph,n,ebene:"Fenstertyp",room:{},fen:{nr:t.kurz||""},vg:null,typ:"Referenzfoto",ms:"",msId:"",wert:"",name:`Typ_${fnSafe(t.kurz)||"ohne"}_${n}.jpg`});}));   // am Ende: bestehende Dateinummern bleiben
   return out;}
 
@@ -625,6 +682,9 @@ async function makeZip(entries,onStep){const enc=new TextEncoder(),parts=[],cd=[
     cd.push(ch.buffer,nm);off+=30+nm.length+sz;i++;onStep&&onStep(i,entries.length);}
   const cdSize=cd.reduce((s,x)=>s+x.byteLength,0);const eo=new DataView(new ArrayBuffer(22));eo.setUint32(0,0x06054b50,true);eo.setUint16(8,entries.length,true);eo.setUint16(10,entries.length,true);eo.setUint32(12,cdSize,true);eo.setUint32(16,off,true);
   return new Blob([...parts,...cd,eo.buffer],{type:"application/zip"});}
+// makeZip schreibt ZIP32: ab 4 GB entstünde still eine defekte Datei. Deshalb die Grösse vorab bestimmen.
+const ZIP_MAX=3.9e9;
+function zipGroesse(entries){const enc=new TextEncoder();let s=22;for(const e of entries){const nl=enc.encode(e.name).length,sz=typeof e.data==="string"?enc.encode(e.data).length:(e.data&&e.data.size)||0;s+=30+46+2*nl+sz;}return s;}
 // ZIP lesen: unkomprimierte Einträge werden nur als Datei-Ausschnitt referenziert; komprimierte über SheetJS/CFB
 async function readZip(file){const tl=Math.min(file.size,65557);const tail=new DataView(await file.slice(file.size-tl).arrayBuffer());let eo=-1;
   for(let i=tl-22;i>=0;i--){if(tail.getUint32(i,true)===0x06054b50){eo=i;break;}}if(eo<0)throw new Error("keine gültige ZIP-Datei");
@@ -660,7 +720,7 @@ async function readProjectFile(file){const head=await file.slice(0,2).text();let
   if(head==="PK"){files=await readZip(file);const jf=[...files.keys()].find(k=>/\.json$/i.test(k));if(!jf)throw new Error("ZIP enthält keine Projektdaten");d=JSON.parse(await files.get(jf).text());}
   else d=JSON.parse(await file.text());
   if(!d||!d.id||!Array.isArray(d.rooms))throw new Error("keine FensterCheck-Projektdatei");
-  for(const o of photoLists(d)){const out=[];for(const ph of o.photos){try{if(ph.data)out.push(await storeExistingPhoto(ph,ph.data));else if(ph.file&&files&&files.get(ph.file))out.push(await storeExistingPhoto(ph,files.get(ph.file)));}catch(e){}}o.photos=out;}
+  for(const o of photoLists(d)){const out=[];for(const ph of o.photos){try{if(ph.orig){const b=ph.file&&files&&files.get(ph.file);out.push(b?await storeImportedOrig(ph,b):massOhneBild(ph));}else if(ph.data)out.push(await storeExistingPhoto(ph,ph.data));else if(ph.file&&files&&files.get(ph.file))out.push(await storeExistingPhoto(ph,files.get(ph.file)));}catch(e){if(ph.orig)out.push(massOhneBild(ph));}}o.photos=out;}
   // Unterlagen: Bild aus der ZIP mit neuer ID speichern; ohne Bild (JSON) bleibt der Eintrag als «Bild fehlt»
   for(const doc of (d.docs||[])){let m=null;try{if(doc.file&&files&&files.get(doc.file))m=await storeExistingPhoto({},files.get(doc.file));}catch(e){}
     if(m){doc.photoId=m.id;doc.w=m.w;doc.h=m.h;doc.kb=m.kb;}else doc.photoId="";delete doc.file;}
@@ -818,7 +878,7 @@ function doExcelExport(p){const d=buildExport(p);const wb=XLSX.utils.book_new();
   XLSX.writeFile(wb,expName(p,"xlsx"));}
 const expName=(p,ext)=>`FensterCheck_${fnSafe(p.name)||"Projekt"}_${new Date().toISOString().slice(0,10)}.${ext}`;
 function doCSVExport(p){const d=buildExport(p);const csv=d.mr.map(r=>r.map(c=>{const s=String(c??"");return s.includes(";")||s.includes('"')||s.includes("\n")?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\n");download(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"}),expName(p,"csv"));}
-function stripPhotos(p){const c=JSON.parse(JSON.stringify(p));photoLists(c).forEach(o=>{o.photos=[];});(c.docs||[]).forEach(d=>{d.photoId="";});return c;}
+function stripPhotos(p){const c=JSON.parse(JSON.stringify(p));photoLists(c).forEach(o=>{o.photos=o.photos.filter(ph=>ph&&ph.orig);});(c.docs||[]).forEach(d=>{d.photoId="";});return c;}
 // Nur Daten (ohne Fotos) \u2013 klein, z.B. zum Zusammenf\u00FChren zwischen Ger\u00E4ten
 function doJSONExport(p){download(new Blob([JSON.stringify(stripPhotos(p),null,1)],{type:"application/json"}),expName(p,"json").replace(/\.json$/,"_Daten.json"));}
 // ZIP mit Projektdaten (fenstercheck.json) + allen Fotos als lesbar benannte Dateien \u2013 wieder importierbar
@@ -826,8 +886,9 @@ async function doZipExport(p,onStep){const ents=photoEntries(p);const fileOf={};
   const data=JSON.parse(JSON.stringify(p));photoLists(data).forEach(o=>o.photos.forEach(ph=>{if(fileOf[ph.id])ph.file=fileOf[ph.id];delete ph.data;}));data._format="fenstercheck-zip-1";
   const dents=docEntries(p),dfile={};dents.forEach(e=>{dfile[e.doc.id]="unterlagen/"+e.name;});(data.docs||[]).forEach(d=>{if(dfile[d.id])d.file=dfile[d.id];});
   const entries=[{name:"fenstercheck.json",data:JSON.stringify(data,null,1)}];let miss=0,nd=0;
-  for(const e of ents){const b=await photoBlob(e.ph);if(b)entries.push({name:"fotos/"+e.name,data:b});else miss++;}
+  for(const e of ents){const b=await photoBlob(e.ph,{orig:!!e.ph.orig});if(b)entries.push({name:"fotos/"+e.name,data:b});else miss++;}
   for(const e of dents){const r=e.doc.photoId?await phGet(e.doc.photoId):null;if(r&&r.blob){entries.push({name:"unterlagen/"+e.name,data:r.blob});nd++;}}
+  const gr=zipGroesse(entries);if(gr>ZIP_MAX){const err=new Error(`Die Sicherung wäre ${(gr/1e9).toFixed(1)} GB gross, möglich sind höchstens ${(ZIP_MAX/1e9).toFixed(1)} GB. Bitte das Projekt teilen (z. B. je Gebäudeteil ein Projekt) oder nicht mehr benötigte Massfotos löschen.`);err.fuerNutzer=true;throw err;}
   download(await makeZip(entries,onStep),expName(p,"zip"));return {n:ents.length-miss,nd,miss:miss+dents.length-nd};}
 
 // Theme
@@ -906,24 +967,24 @@ function ZustInp({modus:m,value:v,onChange:ch}){
 // Vorschaubild aus dem Foto-Store (Objekt-URLs werden für die Sitzung zwischengespeichert)
 const thumbCache=new Map();
 function Thumb({ph,onClick}){
-  const[u,setU]=useState(ph.data||thumbCache.get(ph.id)||null);
+  const[u,setU]=useState(ph.data||thumbCache.get(ph.id)||null);const[miss,setMiss]=useState(false);
   useEffect(()=>{if(ph.data){setU(ph.data);return;}const c=thumbCache.get(ph.id);if(c){setU(c);return;}let alive=true;
-    phGet(ph.id).then(r=>{const b=r&&(r.tblob||r.blob);if(!b)return;const url=URL.createObjectURL(b);thumbCache.set(ph.id,url);if(alive)setU(url);}).catch(()=>{});
+    phGet(ph.id).then(r=>{const b=r&&(r.tblob||r.blob);if(!b){if(alive&&ph.orig)setMiss(true);return;}const url=URL.createObjectURL(b);thumbCache.set(ph.id,url);if(alive)setU(url);}).catch(()=>{});
     return()=>{alive=false;};},[ph.id,ph.data]);
-  return <div onClick={onClick} style={{...$.phT,cursor:"pointer",background:C.sf2,overflow:"hidden"}}>{u&&<img src={u} alt="" style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>}</div>;
+  return <div onClick={onClick} style={{...$.phT,cursor:"pointer",background:C.sf2,overflow:"hidden"}}>{u&&<img src={u} alt="" style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>}{!u&&miss&&<div style={{fontSize:9,lineHeight:1.2,color:C.warn,padding:3,textAlign:"center"}}>Original fehlt</div>}</div>;
 }
 // Vollbild-Betrachter: Tippen = Originalgröße (verschiebbar), Wischen/Pfeile = blättern
 function PhotoViewer({photos,start,title,onClose,onDel}){
   const[i,setI]=useState(start||0);const[zoom,setZoom]=useState(false);
-  const[url,setUrl]=useState(()=>{const q=photos[start||0];return q?(q.data||thumbCache.get(q.id)||null):null;});
+  const[url,setUrl]=useState(()=>{const q=photos[start||0];return q?(q.data||thumbCache.get(q.id)||null):null;});const[ourl,setOurl]=useState(null);const[miss,setMiss]=useState(false);
   const box=useRef(null),tx=useRef(null),zp=useRef(null);
   const n=photos.length,idx=Math.min(i,Math.max(0,n-1)),ph=photos[idx];
   const go=d=>{if(n>1)setI((idx+d+n)%n);};
   useEffect(()=>{if(!n)onClose();},[n]);
   useEffect(()=>{const o=document.body.style.overflow;document.body.style.overflow="hidden";return()=>{document.body.style.overflow=o;};},[]);
-  useEffect(()=>{if(!ph)return;let alive=true,u=null;setZoom(false);setUrl(ph.data||thumbCache.get(ph.id)||null);
-    if(!ph.data)phGet(ph.id).then(r=>{if(alive&&r&&r.blob){u=URL.createObjectURL(r.blob);setUrl(u);}}).catch(()=>{});
-    return()=>{alive=false;if(u)URL.revokeObjectURL(u);};},[ph&&ph.id]);
+  useEffect(()=>{if(!ph)return;let alive=true,u=null,o=null;setZoom(false);setUrl(ph.data||thumbCache.get(ph.id)||null);setOurl(null);setMiss(false);
+    if(!ph.data)phGet(ph.id).then(r=>{if(!alive)return;if(r&&r.blob){u=URL.createObjectURL(r.blob);setUrl(u);if(r.oblob){o=URL.createObjectURL(r.oblob);setOurl(o);}}else if(ph.orig)setMiss(true);}).catch(()=>{});
+    return()=>{alive=false;if(u)URL.revokeObjectURL(u);if(o)URL.revokeObjectURL(o);};},[ph&&ph.id]);
   useEffect(()=>{const k=e=>{if(e.key==="Escape")onClose();else if(e.key==="ArrowRight")go(1);else if(e.key==="ArrowLeft")go(-1);};window.addEventListener("keydown",k);return()=>window.removeEventListener("keydown",k);});
   useEffect(()=>{const b=box.current,img=b&&b.querySelector("img");if(zoom&&img&&zp.current){b.scrollLeft=zp.current.fx*img.offsetWidth-b.clientWidth/2;b.scrollTop=zp.current.fy*img.offsetHeight-b.clientHeight/2;}},[zoom]);
   if(!ph)return null;
@@ -932,14 +993,14 @@ function PhotoViewer({photos,start,title,onClose,onDel}){
   const vb={background:"rgba(20,27,36,0.85)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:8,padding:"8px 12px",fontSize:15,fontWeight:600,cursor:"pointer",textDecoration:"none",lineHeight:1};
   return ReactDOM.createPortal(<div style={{position:"fixed",inset:0,background:"#000",zIndex:500,display:"flex",flexDirection:"column",color:"#fff"}}>
     <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",paddingTop:"max(10px, env(safe-area-inset-top))"}}>
-      <div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{title||"Foto"} · {idx+1}/{n}</div><div style={{fontSize:11,opacity:0.65}}>{isNaN(z)?"":z.toLocaleString("de-CH")}{ph.w?` · ${ph.w}×${ph.h} px`:""}</div></div>
-      {url&&<a href={url} download={`Foto_${idx+1}.jpg`} style={vb}>⬇</a>}
+      <div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,fontSize:14,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{title||"Foto"} · {idx+1}/{n}</div><div style={{fontSize:11,opacity:0.65}}>{isNaN(z)?"":z.toLocaleString("de-CH")}{ph.w?` · ${ph.w}×${ph.h} px`:""}{ph.orig?` · Original ${ph.orig.w}×${ph.orig.h} px`:""}</div></div>
+      {url&&<a href={ourl||url} download={ourl?`Massfoto_${idx+1}.${origExt(ph)}`:`Foto_${idx+1}.jpg`} title={ourl?"Original herunterladen":undefined} style={vb}>⬇</a>}
       {onDel&&<button style={vb} onClick={()=>{if(confirm("Foto löschen?"))onDel(ph.id);}}>🗑</button>}
       <button style={vb} onClick={onClose}>✕</button>
     </div>
     <div ref={box} onTouchStart={e=>{if(!zoom)tx.current=e.touches[0].clientX;}} onTouchEnd={e=>{if(zoom||tx.current==null)return;const dx=e.changedTouches[0].clientX-tx.current;tx.current=null;if(Math.abs(dx)>50)go(dx<0?1:-1);}}
       style={{flex:1,minHeight:0,overflow:zoom?"auto":"hidden",display:zoom?"block":"flex",alignItems:"center",justifyContent:"center",position:"relative"}}>
-      {url?<img src={url} alt="" onClick={tap} style={zoom?{display:"block",width:ph.w||"auto",maxWidth:"none",cursor:"zoom-out"}:{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",cursor:"zoom-in"}}/>:<div style={{opacity:0.6}}>Lädt…</div>}
+      {url?<img src={url} alt="" onClick={tap} style={zoom?{display:"block",width:ph.w||"auto",maxWidth:"none",cursor:"zoom-out"}:{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",cursor:"zoom-in"}}/>:<div style={{opacity:0.6}}>{miss?"Original fehlt":"Lädt…"}</div>}
       {!zoom&&n>1&&<button style={{...vb,position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",fontSize:22,padding:"10px 14px"}} onClick={()=>go(-1)}>‹</button>}
       {!zoom&&n>1&&<button style={{...vb,position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",fontSize:22,padding:"10px 14px"}} onClick={()=>go(1)}>›</button>}
     </div>
@@ -948,22 +1009,29 @@ function PhotoViewer({photos,start,title,onClose,onDel}){
 }
 // Kamera-/Galerie-Knöpfe mit versteckten Datei-Eingaben; verkleinert, speichert und meldet jedes Foto einzeln über onAdd.
 // Nacheinander verarbeiten: Kamerafotos sind im Speicher groß (12 MP ≈ 48 MB entpackt)
-function PhotoBtn({onAdd,gallery,small}){const camRef=useRef(),galRef=useRef();const[busy,setBusy]=useState(0);
-  const h=async e=>{const files=[...(e.target.files||[])];e.target.value="";if(!files.length)return;setBusy(files.length);let fail=0;
-    for(const f of files){try{onAdd(await storeNewPhoto(f));}catch(err){console.error(err);fail++;}setBusy(b=>Math.max(0,b-1));}
-    if(fail)alert(`${fail} Foto(s) konnten nicht gespeichert werden (Speicher voll oder Bildformat nicht lesbar).`);};
+function PhotoBtn({onAdd,gallery,small,store}){const camRef=useRef(),galRef=useRef();const[busy,setBusy]=useState(0);
+  const h=async e=>{const files=[...(e.target.files||[])];e.target.value="";if(!files.length)return;setBusy(files.length);let fail=0,meld="";
+    for(const f of files){try{onAdd(await (store||storeNewPhoto)(f));}catch(err){console.error(err);if(err&&err.fuerNutzer)meld=err.message;else fail++;}setBusy(b=>Math.max(0,b-1));}
+    if(meld)alert(meld);if(fail)alert(`${fail} Foto(s) konnten nicht gespeichert werden (Speicher voll oder Bildformat nicht lesbar).`);};
   const bs={...$.btn,...$.bO,...$.bS,padding:small?"4px 8px":"5px 10px"};
   return <span style={{display:"inline-flex",gap:5,alignItems:"center"}}>{busy>0&&<span style={{fontSize:11,color:C.warn}}>⏳{busy}</span>}<button style={bs} title="Kamera" onClick={()=>camRef.current?.click()}>📷</button>{gallery&&<button style={bs} title="Galerie" onClick={()=>galRef.current?.click()}>🖼️</button>}<input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={h}/>{gallery&&<input ref={galRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={h}/>}</span>;}
 // Kleine Vorschau-Reihe (z.B. Messfotos unter einem Messwert): Tippen öffnet den Betrachter, Löschen dort über 🗑
 function ThumbRow({photos:ps,title,onDel,size}){const[vi,setVi]=useState(null);if(!ps.length)return null;const sz=size||44;
   return <div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:4}}>{ps.map((p,i)=><div key={p.id} style={{width:sz,height:sz}}><Thumb ph={p} onClick={()=>setVi(i)}/></div>)}
     {vi!=null&&<PhotoViewer photos={ps} start={vi} title={title} onClose={()=>setVi(null)} onDel={onDel}/>}</div>;}
-function Photos({photos:ps,onAdd,onDel,label:l}){const[vi,setVi]=useState(null);
-  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length})</span><PhotoBtn onAdd={onAdd} gallery/></div>
+function Photos({photos:ps,onAdd,onDel,label:l,noAdd}){const[vi,setVi]=useState(null);
+  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>{l||"Fotos"} ({ps.length})</span>{!noAdd&&<PhotoBtn onAdd={onAdd} gallery/>}</div>
     {ps.length>0&&<div style={$.phG}>{ps.map((p,i)=><div key={p.id} style={{position:"relative"}}><Thumb ph={p} onClick={()=>setVi(i)}/><div onClick={()=>{if(confirm("Foto löschen?"))onDel(p.id);}} style={{position:"absolute",top:2,right:2,width:20,height:20,borderRadius:10,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,cursor:"pointer"}}>×</div></div>)}</div>}
     {vi!=null&&ps.length>0&&<PhotoViewer photos={ps} start={vi} title={l||"Fotos"} onClose={()=>setVi(null)} onDel={onDel}/>}
   </div>;
 }
+// Massfotos am Fenster: Original bleibt unverändert im Store; je Foto Aufnahmedaten und Hinweise. Neue nur mit Schalter (kannNeu).
+function MassFotos({photos:ps,onAdd,onDel,kannNeu}){const[vi,setVi]=useState(null);
+  return <div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>📐 Massfotos ({ps.length})</span>{kannNeu&&<PhotoBtn onAdd={onAdd} gallery store={storeOrigPhoto}/>}</div>
+    {ps.map((p,i)=><div key={p.id} style={{display:"flex",gap:8,alignItems:"flex-start",marginTop:6}}><div style={{width:56,flexShrink:0}}><Thumb ph={p} onClick={()=>setVi(i)}/></div>
+      <div style={{flex:1,minWidth:0,fontSize:11,lineHeight:1.4,color:C.tx2}}>{massInfo(p)||"Keine Angaben"}{massHinweise(p).map((h,j)=><div key={j} style={{color:C.warn}}>⚠ {h}</div>)}</div>
+      <div onClick={()=>{if(confirm("Massfoto löschen? Das Original geht dabei verloren."))onDel(p.id);}} style={{flexShrink:0,width:20,height:20,borderRadius:10,background:C.err,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,cursor:"pointer"}}>×</div></div>)}
+    {vi!=null&&ps.length>0&&<PhotoViewer photos={ps} start={vi} title="Massfoto" onClose={()=>setVi(null)} onDel={onDel}/>}</div>;}
 // Ziffernblock für Messwerte; "±" für Messarten mit negativen Werten (Taupunkt). onSubmit → false = nicht gespeichert
 function NumPad({value:v,onChange:ch,onSubmit:sub,onNext:nxt,nextLabel,unit,neg}){
   const pr=k=>{if(k==="DEL")ch(v.slice(0,-1));else if(k==="."){if(!v.includes("."))ch((v===""||v==="-"?v+"0":v)+".");}else if(k==="±")ch(v.startsWith("-")?v.slice(1):"-"+v);else ch(v+k);};
@@ -988,7 +1056,7 @@ function DocMetaForm({meta,setMeta,tl}){const set=(k,v)=>setMeta({...meta,[k]:v}
       {meta.art==="ansicht"&&<div style={{flex:1}}><label style={$.lbl}>Fassade</label><select style={$.sel} value={meta.fassade||""} onChange={e=>set("fassade",e.target.value)}><option value="">—</option>{ORIENTATIONS.map(o=><option key={o}>{o}</option>)}</select></div>}
       <div style={{flex:1}}><label style={$.lbl}>Herkunft</label><select style={$.sel} value={meta.herkunft||"bild"} onChange={e=>set("herkunft",e.target.value)}>{Object.entries(DOC_HERKUNFT).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></div>
     </div>
-    {DOC_ARTEN[meta.art]&&DOC_ARTEN[meta.art].plan&&<div style={{fontSize:11,color:C.tx2}}>{meta.art==="grundriss"?"Grundriss: Räume und Fenster lassen sich als Punkte verorten.":"Ansicht: Fenster lassen sich als Rechtecke einzeichnen – auch auf einem Fassadenfoto oder einer Handskizze. Zählung von aussen gesehen links → rechts."}</div>}
+    {DOC_ARTEN[meta.art]&&DOC_ARTEN[meta.art].plan&&<div style={{fontSize:11,color:C.tx2}}>{meta.art==="grundriss"?"Grundriss: Räume und Fenster lassen sich als Punkte verorten.":"Ansicht: Fenster lassen sich als Rechtecke einzeichnen – auch auf einem Fassadenfoto oder einer Handskizze. Zählung von innen gesehen links → rechts, im Ansichtsplan also rechts → links."}</div>}
   </div>;}
 
 // Import einer Unterlage: PDF-Seite wählen → zuschneiden/drehen → Angaben → speichern. Bei mehrseitigen PDFs danach weitere Seiten möglich.
@@ -1229,7 +1297,7 @@ function GeoEditor({geo,onChange,verglasungen,onJump,onSync,onClear,getVorbilder
   const applyTpl=ng=>{if((geoCellCount(g)>1||geoLeaves(g).some(l=>l.node.art))&&!confirm("Bisherige Aufteilung ersetzen? Die Verglasungen werden den neuen Feldern der Reihe nach zugeordnet."))return;upd(ng,null,{t:"tpl"});setShowTpl(false);};
   const stegBtns=(path,val)=>[["pfosten","Pfosten"],["stulp","Stulp"]].map(([k,l])=><button key={k} style={{...gb,...(val===k?$.bP:$.bO)}} onClick={()=>upd(geoSetNode(g,path,{steg:k}))}>{l}</button>);
   return <div>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>Fensteraufbau</span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setShowTpl(x=>!x)}>Vorlagen {showTpl?"▴":"▾"}</button></div>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={$.lbl}>Fensteraufbau <span style={{fontWeight:400,color:C.tx3}}>von innen gesehen</span></span><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 10px"}} onClick={()=>setShowTpl(x=>!x)}>Vorlagen {showTpl?"▴":"▾"}</button></div>
     {showTpl&&<div style={{padding:8,background:C.sf2,borderRadius:8,marginBottom:8}}>
       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:C.tx2,minWidth:40}}>Raster</span>
         {[["Spalte","Spalten",rc,setRc],["Zeile","Zeilen",rr,setRr]].map(([l1,l2,v,set])=><span key={l2} style={{display:"inline-flex",alignItems:"center",gap:3}}><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>set(Math.max(1,v-1))}>−</button><span style={{fontSize:12,minWidth:56,textAlign:"center"}}>{v} {v===1?l1:l2}</span><button style={{...gb,...$.bO,padding:"4px 11px"}} onClick={()=>set(Math.min(8,v+1))}>+</button></span>)}</div>
@@ -1358,6 +1426,7 @@ function App(){
   const[bootErr,setBootErr]=useState(null);
   const[busyMsg,setBusyMsg]=useState(""); // länger laufende Aktionen (ZIP, Import)
   const[storInfo,setStorInfo]=useState(null);
+  const[fvOn,setFvOn]=useState(fvGet);   // Foto-Vermessung (Erprobung), je Gerät
   const[edR,setEdR]=useState(null); // Raum bearbeiten {geschoss,raumnummer,raumId,trakt}
   const[newTrakt,setNewTrakt]=useState("");
 
@@ -1607,7 +1676,7 @@ function App(){
   const addPh=(rId,fId,vId,ph)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t){if(!t.photos)t.photos=[];t.photos.push(ph);}});};
   const delPh=(rId,fId,vId,pId)=>{mut(p=>{let t;if(vId)t=gV(gF(gR(p,rId),fId),vId);else if(fId)t=gF(gR(p,rId),fId);else t=gR(p,rId);if(t)t.photos=(t.photos||[]).filter(x=>x.id!==pId);});phDel([pId]);};
 
-  const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=x.kb?x.kb*1024:(x.data||"").length*0.75;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});(p?.docs||[]).forEach(d=>{pb+=(d.kb||0)*1024;});return{rooms:(p?.rooms||[]).length,g,m,ph,ud:(p?.docs||[]).length,mb:pb/1048576};};
+  const pSt=p=>{let g=0,m=0,ph=0,pb=0;const aP=arr=>(arr||[]).forEach(x=>{ph++;pb+=(x.kb?x.kb*1024:(x.data||"").length*0.75)+((x.orig&&!x.ohneBild&&x.orig.kb)||0)*1024;});(p?.rooms||[]).forEach(r=>{aP(r.photos);(r.fenster||[]).forEach(f=>{aP(f.photos);(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;aP(v.photos);});});});(p?.docs||[]).forEach(d=>{pb+=(d.kb||0)*1024;});return{rooms:(p?.rooms||[]).length,g,m,ph,ud:(p?.docs||[]).length,mb:pb/1048576};};
   const rSt=r=>{let g=0,m=0,e=0;(r?.fenster||[]).forEach(f=>(f.verglasungen||[]).forEach(v=>{g++;m+=(v.messungen||[]).length;if(vgDone(proj,f,v))e++;}));return{f:(r?.fenster||[]).length,g,m,e};};
   const isA=k=>(proj?.activeFields||[]).includes(k);
   const secFs=id=>secFields(id).filter(([k,d])=>isA(k)&&(d.t!=="zustand"||hasZ()));   // aktive Felder eines Abschnitts (inkl. Sonderfelder Zustand/Geometrie/Rahmenmaße)
@@ -1779,8 +1848,12 @@ function App(){
   // GLOBALE EINSTELLUNGEN
   if(view==="settings")return <div className="app" style={$.app}><div style={$.hdr}><button style={$.hdrB} onClick={()=>setView("home")}>← Zurück</button><div style={$.hdrT}>Einstellungen</div></div><div className="body" style={$.body}>
     <div style={$.card}><div style={$.cardT}>Speicher auf diesem Gerät</div>
-      {storInfo?<div style={{fontSize:13,lineHeight:1.6}}>Belegt: <b>{(storInfo.used/1048576).toFixed(1)} MB</b>{storInfo.quota?<> von ca. {(storInfo.quota/1073741824).toFixed(1)} GB</>:null}<br/>Dauerhaft gesichert: <b style={{color:storInfo.per?C.ok:C.warn}}>{storInfo.per===null?"unbekannt":storInfo.per?"ja":"nein"}</b></div>:<div style={{fontSize:12,color:C.tx2}}>Keine Angaben verfügbar.</div>}
+      {storInfo?<div style={{fontSize:13,lineHeight:1.6}}>Belegt: <b>{(storInfo.used/1048576).toFixed(1)} MB</b>{storInfo.quota?<> von ca. {(storInfo.quota/1073741824).toFixed(1)} GB</>:null}{origKbIn(projects).n>0&&<><br/>davon Originale: <b>{(origKbIn(projects).kb/1024).toFixed(1)} MB</b> ({origKbIn(projects).n} Massfotos)</>}<br/>Dauerhaft gesichert: <b style={{color:storInfo.per?C.ok:C.warn}}>{storInfo.per===null?"unbekannt":storInfo.per?"ja":"nein"}</b></div>:<div style={{fontSize:12,color:C.tx2}}>Keine Angaben verfügbar.</div>}
       <div style={{fontSize:11,color:C.tx2,marginTop:6,lineHeight:1.5}}>Fotos werden in {PH_MAX} px Auflösung gespeichert. iPhone/iPad: App über „Teilen → Zum Home-Bildschirm" installieren – sonst kann Safari Daten nach 7 Tagen ohne Nutzung löschen. Regelmässig eine ZIP-Sicherung erstellen.</div>
+    </div>
+    <div style={$.card}><div style={$.cardT}>Foto-Vermessung (Erprobung)</div>
+      <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={fvOn} onChange={e=>{fvSet(e.target.checked);setFvOn(e.target.checked);}} style={{marginTop:3}}/><span>Massfotos am Fenster und Reflexfotos an der Verglasung aufnehmen</span></label>
+      <div style={{fontSize:11,color:C.tx2,marginTop:6,lineHeight:1.5}}>Gilt für dieses Gerät. Massfotos werden als unverändertes Original gespeichert (ca. 3–6 MB je Foto) und sind in der ZIP-Sicherung enthalten; alle übrigen Fotos bleiben bei {PH_MAX} px. Kamera: JPEG, 4:3, Hauptkamera 1×, Gerät quer. Die Auswertung folgt in einer späteren Version. Vorhandene Massfotos bleiben auch ausgeschaltet erhalten.</div>
     </div>
     <div style={$.card}><div style={$.cardT}>Standardwerte (Thermisch) – Global</div>
       <div style={{fontSize:11,color:C.tx2,marginBottom:10}}>Referenzwerte zur Vorbelegung von Uf, Ug, g und ψ – frei anpassbar, keine Gewähr. Gelten für alle Projekte; einzelne Projekte können sie in der Einrichtung überschreiben.</div>
@@ -1800,7 +1873,7 @@ function App(){
         <li><b>Projekt</b> anlegen; in <b>Einrichtung</b> Name, Begehung (Begeher, Wetter, Temperaturen) und <b>Erfassungsprofil</b> wählen: Kurzaufnahme, Aufnahme, Detailaufnahme – oder für Messbegehungen Gasfüllgrad, Taupunkt, Ug-Messung. Messprofile zeigen nur ihre Messart, eine kompakte Raumliste und den Fortschritt «gemessen»; «Speichern &amp; weiter» springt zur nächsten offenen Verglasung, «nicht messbar» hält den Grund fest. Das Profil lässt sich vor jeder Begehung umschalten, Daten bleiben erhalten. <b>Gasfüllgrad:</b> Gerät wählen (Sparklike Laser Portable oder Handheld); beim Portable wird der gemessene Aufbau mitgespeichert und als Scheibenaufbau übernommen – vorgeschlagen wird der Wert der Verglasung bzw. der zuletzt gemessene; bei 3-fach-Glas je SZR ein Wert.</li>
         <li>Optional <b>Gebäudeteile/Trakte</b> in der Einrichtung anlegen. <b>Räume</b> anlegen («+ Raum» oben oder je Geschoss) oder per CSV importieren; gleichartige Räume mit <b>⧉</b> duplizieren, mit <b>✎</b> umbenennen. <b>Nummern</b> (Einrichtung): frei bzw. aus Unterlagen – die App schlägt die nächste freie Nummer vor (FE09-E.01 → FE09-E.02) – oder nach <b>Schema</b>: Raum R02.01 (Geschoss.Nr; EG 00, UG U1, DG), Fenster R02.01-1, Verglasung V1.</li>
         <li><b>Pläne &amp; Unterlagen</b> (🗺 in der Raumliste): Grundrisse, Ansichten, Fassadenfotos, Handskizzen, Detailschnitte, Datenblätter, Energienachweise importieren – PDF am PC (Seite wählen, <b>zuschneiden</b>, drehen), Bilder und Fotos auch am Handy. Im Plan mit <b>✎ Verorten</b> Räume (Punkt) und Fenster (Punkt im Grundriss, Rechteck in der Ansicht) setzen; die Auswahl springt dabei zum nächsten Eintrag. Ohne Auswahl legt ein Rechteck (Ansicht) bzw. ein Tipp ins Leere (Grundriss) ein <b>neues Fenster</b> oder einen neuen Raum an – mit <b>Serie</b> jedes weitere gleich als nächste Nummer (S01, S02, …). Danach Marker antippen → Raum bzw. Fenster (im Messprofil: Messung der nächsten offenen Verglasung); in der Fensteransicht blättert ‹ › durch die Fenster des Raums, «🪟» in der Messung zeigt das ganze Fenster, die Fensternummer in der kompakten Messliste ebenso. Die Farben zeigen den Fortschritt des Profils. „🗺" an Raum, Fenster und Messung zeigt die Stelle im Plan.</li>
-        <li><b>Fenster</b> hinzufügen – Nummer vorgeschlagen, <b>Aufteilung</b> gleich wählen (wie Vorbild, Raster, Vorlage oder 1–4 Verglasungen ohne Skizze); auch aus der Messung mit «+ Fenster in …». Gleichartige mit <b>⧉</b> duplizieren (nächste Nummer). Von oben nach unten erfassen: Übersichtsfoto, Lage & Aufbau (Fassade, Bauart, <b>Geometrie</b>), Rahmen, Funktion & Zustand, Kennwerte, Bemerkungen. <b>Skizze führt:</b> jedes Feld ist genau eine Verglasung – Feld teilen legt eine Verglasung an (Glasangaben vom geteilten Feld), Feld entfernen löscht sie (mit Rückfrage bei Inhalt), V1, V2 … folgen der Skizze; «Inhalt tauschen mit» korrigiert eine Zuordnung. <b>Fenster bearbeiten</b> (Fensternummer antippen, ✎ an der Skizze in der Messung, ⋯ in der Messliste, Plan-Marker): Nummer, Raum wechseln, Aufteilung, Duplizieren, Löschen – ohne die Ansicht zu verlassen.</li>
+        <li><b>Fenster</b> hinzufügen – Nummer vorgeschlagen (Zählung und Skizze von innen gesehen, links → rechts), <b>Aufteilung</b> gleich wählen (wie Vorbild, Raster, Vorlage oder 1–4 Verglasungen ohne Skizze); auch aus der Messung mit «+ Fenster in …». Gleichartige mit <b>⧉</b> duplizieren (nächste Nummer). Von oben nach unten erfassen: Übersichtsfoto, Lage & Aufbau (Fassade, Bauart, <b>Geometrie</b>), Rahmen, Funktion & Zustand, Kennwerte, Bemerkungen. <b>Skizze führt:</b> jedes Feld ist genau eine Verglasung – Feld teilen legt eine Verglasung an (Glasangaben vom geteilten Feld), Feld entfernen löscht sie (mit Rückfrage bei Inhalt), V1, V2 … folgen der Skizze; «Inhalt tauschen mit» korrigiert eine Zuordnung. <b>Fenster bearbeiten</b> (Fensternummer antippen, ✎ an der Skizze in der Messung, ⋯ in der Messliste, Plan-Marker): Nummer, Raum wechseln, Aufteilung, Duplizieren, Löschen – ohne die Ansicht zu verlassen.</li>
         <li><b>Fenstertypen</b> (Einrichtung bzw. 🧩 in der Raumliste): gleiche Fenster einmal beschreiben – Aufteilung, Konstruktion (Bauart, Material, Baujahr, Masse, Beschlag, Dichtungen, Uf/Uw), Rahmenmasse, Referenzfoto, Unterlagen – und zuweisen: beim Anlegen («Fenstertyp …»), an der Fensterkarte («Typ zuweisen», «Als Typ speichern»), nach Nummernmuster (FE09*) oder per «Typen aus Fensternummern vorschlagen». «Übernehmen» im Typ gibt Änderungen an alle Fenster des Typs weiter (Vorschau; leere Angaben erben, abweichende Werte und eigene Skizzen bleiben; Messwerte bleiben beim Feld). Ändert man vor Ort die Skizze eines Typ-Fensters, fragt die App: alle des Typs, nur dieses oder neuer Typ. «≠ Typ» zeigt abweichende Werte (↺ Typwert).</li>
         <li><b>Verglasung</b> öffnen → Glasstempel (Foto + Text), Aufbau, Fotos, optional <b>Messungen</b> (Gasfüllgrad, Ug gemessen, Taupunkt – beliebig viele Werte; je Wert ein 📷 z.B. für das Display des Messgeräts; ⇄ verschiebt einen Wert zu einer anderen Verglasung des Fensters), Aufbau (⇉ auf alle Verglasungen des Fensters übertragen), Kennwerte (Ug/g/ψ mit Standardwerten), Bemerkungen. <b>Fotos</b>: 📷 Kamera / 🖼️ Galerie; antippen zum Vergrößern.</li>
         <li><b>Thermische Standardwerte</b> global oder pro Projekt unter <b>⚙ Einstellungen</b> anpassen.</li>
@@ -2075,7 +2148,7 @@ function App(){
     <div style={{...$.card,padding:12}}><div style={$.cardT}>Export {s.ph>0&&<span style={{textTransform:"none",fontWeight:400,color:C.tx3}}>· Fotos ~{s.mb.toFixed(1)} MB</span>}</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       <button style={{...$.btn,...$.bP,...$.bS,flex:"1 1 45%"}} onClick={()=>{try{doExcelExport(p);flash("Excel ✓");}catch(e){flash("Fehler");}}} >📊 Excel</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doCSVExport(p);flash("CSV ✓");}}>📄 CSV</button>
-      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} disabled={!!busyMsg} onClick={async()=>{setBusyMsg("ZIP wird erstellt…");try{const r=await doZipExport(p,(i,t)=>setBusyMsg(`ZIP wird erstellt… ${i}/${t}`));flash(`ZIP ✓ (${r.n} Fotos${r.nd?`, ${r.nd} Unterlagen`:""})`+(r.miss?` – ${r.miss} fehlen`:""));}catch(e){console.error(e);flash("ZIP fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");}}>📦 Sicherung: Daten + Fotos (ZIP)</button>
+      <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} disabled={!!busyMsg} onClick={async()=>{setBusyMsg("ZIP wird erstellt…");try{const r=await doZipExport(p,(i,t)=>setBusyMsg(`ZIP wird erstellt… ${i}/${t}`));flash(`ZIP ✓ (${r.n} Fotos${r.nd?`, ${r.nd} Unterlagen`:""})`+(r.miss?` – ${r.miss} fehlen`:""));}catch(e){console.error(e);if(e&&e.fuerNutzer)alert(e.message);else flash("ZIP fehlgeschlagen: "+(e&&e.message||e));}setBusyMsg("");}}>📦 Sicherung: Daten + Fotos (ZIP)</button>
       <button style={{...$.btn,...$.bO,...$.bS,flex:"1 1 45%"}} onClick={()=>{doJSONExport(p);flash("Daten ✓");}}>📃 Nur Daten (JSON)</button>
     </div><div style={{fontSize:10,color:C.tx3,marginTop:6}}>Die ZIP-Sicherung enthält alle Fotos (Ordner „fotos", lesbar benannt) und lässt sich auf jedem Gerät wieder importieren.</div></div>
     {(p.rooms||[]).length>0&&<button style={{...$.btn,...$.bO,...$.bS,...$.bBl,marginBottom:10}} onClick={()=>openAdd()}>+ Raum hinzufügen</button>}
@@ -2112,7 +2185,8 @@ function App(){
     const secBlock=(f,id)=>{const sc=SECTIONS.find(x=>x.id===id),fl=secFs(id);return fl.length?<Sec key={id} title={sc.title} collapsed={sc.collapsed} summary={sc.collapsed?kennSum(fl,f,f,null):null}>{fl.map(x=>fld(f,x))}</Sec>:null;};
     return <div key={f.id} style={$.card}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontWeight:800,fontSize:16,cursor:"pointer"}} title="Fenster bearbeiten: Nummer, Raum, Aufteilung" onClick={()=>setFenEd({fId:f.id})}>🪟 {f.nr} <span style={{fontSize:12,color:C.tx3,fontWeight:400}}>✎</span></span><div style={{display:"flex",alignItems:"center",gap:6}}>{(f.verglasungen||[]).length>0&&f.verglasungen.every(v=>vgDone(p,f,v))&&<span style={{...$.badge,background:C.okBg,color:C.ok}}>✓</span>}{hasPlanFor("fen",rm,f)&&<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>planFor("fen",rm,f)} title="Im Plan zeigen / verorten">🗺</button>}<button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px"}} onClick={()=>{setDupFenId(f.id);setDupQty(1);setModal("dupF");}} title="Fenster duplizieren">⧉ Duplizieren</button><button style={{...$.btn,...$.bO,...$.bS,padding:"4px 9px",color:C.err}} title="Fenster löschen" onClick={()=>{const i=inhalt(f);if(confirm(`Fenster ${f.nr} löschen?`+(i?` Es enthält ${i}.`:"")+" Das lässt sich nicht rückgängig machen."))delFen(rm.id,f.id);}}>🗑</button></div></div>
         {typRow(p,rm,f,false)}
-        <div style={{marginBottom:8}}><Photos label="Fenster-Fotos" photos={f.photos||[]} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
+        <div style={{marginBottom:8}}><Photos label="Fenster-Fotos" photos={(f.photos||[]).filter(x=>!x.art)} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>
+        {(fvOn||(f.photos||[]).some(x=>x.art==="mass"))&&<div style={{marginBottom:8}}><MassFotos photos={(f.photos||[]).filter(x=>x.art==="mass")} kannNeu={fvOn} onAdd={ph=>addPh(rm.id,f.id,null,ph)} onDel={pid=>delPh(rm.id,f.id,null,pid)}/></div>}
         {secBlock(f,"lage")}{secBlock(f,"rahmen")}{secBlock(f,"funktion")}
         {(f.verglasungen||[]).map(v=>{const lm=v.messungen?.[v.messungen.length-1];return <div key={v.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",background:C.sf2,borderRadius:7,marginBottom:3}}>
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,cursor:"pointer"}} onClick={()=>openVg(v)}>
@@ -2304,7 +2378,8 @@ function App(){
       {!isV&&(f.verglasungen||[]).length>1&&secFs("aufbau").some(([k])=>String(v.data?.[k]??"").trim())&&<button style={{...$.btn,...$.bO,...$.bS,marginTop:4}} onClick={()=>{const keys=secFs("aufbau").map(([k])=>k),d=vgCopyDiff(f,v.id,keys),n=f.verglasungen.length-1;
         if(!confirm(`Aufbau-Angaben von V${v.nr} auf die ${n} übrigen Verglasung${n===1?"":"en"} von ${f.nr} übertragen?`+(d.length?` Überschreibt: ${d.slice(0,6).map(x=>`V${x.nr} ${FIELDS[x.k]?.label||x.k}: ${x.alt} → ${x.neu}`).join("; ")}${d.length>6?" …":""}`:"")))return;
         let c=0;mut(q=>{c=vgCopyData(gF(gR(q,rm.id),f.id),v.id,keys);});flash(c?`Aufbau auf ${c} Verglasung${c===1?"":"en"} übertragen`:"Schon überall gleich");}}>⇉ Auf alle Verglasungen von {f.nr} übertragen</button>}</Sec></div>}
-    <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
+    <div style={$.card}><Photos label="Verglasung-Fotos" photos={(v.photos||[]).filter(p=>!p.isStempel&&!p.ms&&!p.art)} onAdd={ph=>addPh(rm.id,f.id,v.id,ph)} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>
+    {(fvOn||(v.photos||[]).some(p=>p.art==="reflex"))&&<div style={$.card}><Photos label="Reflexfotos" noAdd={!fvOn} photos={(v.photos||[]).filter(p=>p.art==="reflex")} onAdd={ph=>addPh(rm.id,f.id,v.id,{...ph,art:"reflex"})} onDel={pid=>delPh(rm.id,f.id,v.id,pid)}/></div>}
     {!mess&&msCard()}
     {secFs("vkenn").length>0&&<div style={$.card}><Sec title="Kennwerte" collapsed summary={kennSum(secFs("vkenn"),v,f,v)}>{secFs("vkenn").map(vfld)}</Sec></div>}
     <div style={$.card}><div style={$.cardT}>Bemerkungen</div><DInp multiline style={{...$.inp,...$.inpS}} value={v.notizen||""} onCommit={t=>setNotiz(rm.id,f.id,v.id,t)} placeholder="Auffälligkeiten, Hinweise zur Verglasung…"/></div>
